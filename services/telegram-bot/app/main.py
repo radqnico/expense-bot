@@ -531,8 +531,8 @@ async def handle_navigation_input(update: Update, context: ContextTypes.DEFAULT_
         context.chat_data.pop(NAV_STATE_KEY, None)
         await update.message.reply_text("Navigation ended.", reply_markup=ReplyKeyboardRemove())
         return
-    # Otherwise, ignore and show help
-    await update.message.reply_text("Use keyboard: Prev, Next, Edit, Delete, Exit", reply_markup=_nav_keyboard())
+    # Otherwise, do nothing so other handlers (echo) can process normal text
+    return
 
 
 async def cmd_import(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
