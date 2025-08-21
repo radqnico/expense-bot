@@ -202,36 +202,30 @@ def _choose_ollama_client(app: Application) -> OllamaClient:
 
 
 def _llm_select_indices(client: OllamaClient, topic: str, items: Sequence[str]) -> Set[int]:
-    """Ask the LLM to select item indices (1-based) matching the topic.
+    """Ask the LLM to select item indices (1-based) strictly matching the topic.
 
-    Returns a set of selected indices. On failure returns empty set.
+    Conservative filter: prefer precision over recall. On failure returns empty set.
     """
     if not items:
         return set()
-    # Limit per batch to keep prompt compact
     lines = [f"{i+1}) {s}" for i, s in enumerate(items)]
     prompt = (
-        "Dato un TEMA, seleziona SOLO gli elementi la cui descrizione è chiaramente
-e direttamente pertinente a quel tema. SII MOLTO SEVERO: meglio escludere
-che includere falsi positivi. Se hai dubbi, NON selezionare.
-
-Tema: "" . topic.strip() . ""
-
-Criteri:
-- Usa il significato, non solo la somiglianza di parole.
-- Considera sinonimi stretti del tema.
-- Escludi concetti diversi con parole simili (no omonimie).
-- Esempio (tema cibo): scegli pranzo, ristorante, pizza, alimentari, spesa, caffè;
-  NON scegliere carburante, benzina, gasolio, olio motore, farmaci, bollette, arredo.
-
-Elenco (numero) descrizione:
-" . join("
-", ) . "
-
-Rispondi SOLO con i numeri separati da virgola (es: 1,3,8).
-Se nessuno, rispondi SOLO: NONE
-Output:
-"
+        "Dato un TEMA, seleziona SOLO gli elementi la cui descrizione è chiaramente "
+        "e direttamente pertinente a quel tema. SII MOLTO SEVERO: meglio escludere "
+        "che includere falsi positivi. Se hai dubbi, NON selezionare.\n\n"
+        f"Tema: \"{topic.strip()}\"\n\n"
+        "Criteri:\n"
+        "- Usa il significato, non solo la somiglianza di parole.\n"
+        "- Considera sinonimi stretti del tema.\n"
+        "- Escludi concetti diversi con parole simili (no omonimie).\n"
+        "- Esempio (tema 'cibo'): scegli pranzo, ristorante, pizza, alimentari, spesa, caffè;\n"
+        "  NON scegliere carburante, benzina, gasolio, olio motore, farmaci, bollette, arredo.\n\n"
+        "Elenco (numero) descrizione:\n"
+        + "\n".join(lines)
+        + "\n\n"
+        "Rispondi SOLO con i numeri separati da virgola (es: 1,3,8).\n"
+        "Se nessuno, rispondi SOLO: NONE\n"
+        "Output:\n"
     )
     try:
         out = client.generate(prompt).strip()
@@ -242,18 +236,14 @@ Output:
     out = out.strip().strip("` ").strip()
     if out.upper().startswith("NONE"):
         return set()
-    # Extract numbers
-    nums = set()
+    nums: Set[int] = set()
     for tok in out.replace("\n", ",").split(","):
         tok = tok.strip()
-        if not tok:
-            continue
         if tok.isdigit():
-            nums.add(int(tok))
-    # Keep those in range
-    return {n for n in nums if 1 <= n <= len(items)}
-
-
+            n = int(tok)
+            if 1 <= n <= len(items):
+                nums.add(n)
+    return nums
 async def cmd_last(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat = update.effective_chat
     if not chat:
