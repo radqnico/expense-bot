@@ -669,6 +669,16 @@ async def echo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not chat:
         return
 
+    # If in navigation mode, do not insert/parse transactions
+    if context.chat_data.get(NAV_STATE_KEY):
+        try:
+            await update.message.reply_text(
+                "Navigation mode is active. Use /navigation to exit before inserting transactions."
+            )
+        except Exception:
+            pass
+        return
+
     app = context.application
     # Resolve hosts and queues
     hosts: list[str] = app.bot_data.get(HOSTS_KEY) or []
