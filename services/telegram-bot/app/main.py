@@ -782,13 +782,17 @@ def main() -> None:
 
         await sync_commands(application)
 
-        # Initialize hosts and per-host queues
-        hosts = parse_ollama_hosts()
+        # Initialize hosts and per-host queues without clobbering any early state
+        hosts = application.bot_data.get(HOSTS_KEY) or parse_ollama_hosts()
         application.bot_data[HOSTS_KEY] = hosts
-        application.bot_data[INFERENCE_QUEUES_KEY] = {}
-        application.bot_data[INFERENCE_PROCESSING_KEY] = {}
+        queues = application.bot_data.get(INFERENCE_QUEUES_KEY) or {}
+        application.bot_data[INFERENCE_QUEUES_KEY] = queues
+        processing = application.bot_data.get(INFERENCE_PROCESSING_KEY) or {}
+        application.bot_data[INFERENCE_PROCESSING_KEY] = processing
         for h in hosts:
-            application.bot_data[INFERENCE_QUEUES_KEY][h] = asyncio.Queue()
+            if h not in queues:
+                queues[h] = asyncio.Queue()
+            processing.setdefault(h, False)
 
         # Start one worker per host
         try:
@@ -827,6 +831,16 @@ def main() -> None:
         .concurrent_updates(True)
         .build()
     )
+
+    # Pre-initialize hosts and queues so early messages before post_init don't get lost
+    try:
+        hosts = parse_ollama_hosts()
+        app.bot_data[HOSTS_KEY] = hosts
+        app.bot_data[INFERENCE_QUEUES_KEY] = {h: asyncio.Queue() for h in hosts}
+        app.bot_data[INFERENCE_PROCESSING_KEY] = {h: False for h in hosts}
+    except Exception:
+        # Best-effort: leave empty; post_init will populate
+        pass
 
     # Create a single worker to process messages sequentially through Ollama
     async def worker(application: Application, host: str) -> None:
