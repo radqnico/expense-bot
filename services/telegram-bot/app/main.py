@@ -169,6 +169,7 @@ def main() -> None:
         Application.builder()
         .token(token)
         .post_init(post_init)
+        .concurrent_updates(True)
         .build()
     )
 
@@ -181,13 +182,15 @@ def main() -> None:
             application.bot_data[INFERENCE_PROCESSING_KEY] = True
             try:
                 # Generate and parse
-                result = to_csv_or_nd(job.text, client)
+                result = await asyncio.to_thread(to_csv_or_nd, job.text, client)
                 # Persist if CSV
                 try:
                     if "," in result and result.upper() != "ND":
                         amount_str, description = result.split(",", 1)
                         amount = Decimal(amount_str.strip())
-                        insert_transaction(int(job.chat_id), amount, description.strip())
+                        await asyncio.to_thread(
+                            insert_transaction, int(job.chat_id), amount, description.strip()
+                        )
                 except (InvalidOperation, Exception):
                     pass
                 # Reply to user
