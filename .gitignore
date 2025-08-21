@@ -10,3 +10,7 @@ venv/
 
 # macOS
 .DS_Store
+
+# Ignore generated volumes content
+volumes/**
+!volumes/**/.gitkeep

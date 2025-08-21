@@ -20,6 +20,8 @@ COPY app ./app
 ENV TELEGRAM_BOT_TOKEN="" \
     BOT_NAME="RADQ Expenses Tracker" \
     BOT_SHORT_DESCRIPTION="Track expenses easily with RADQ." \
-    BOT_DESCRIPTION="A simple expenses tracker bot. Use /help to see commands."
+    BOT_DESCRIPTION="A simple expenses tracker bot. Use /help to see commands." \
+    OLLAMA_HOST="http://ollama:11434" \
+    OLLAMA_MODEL="qwen2.5:0.5b"
 
 CMD ["python", "-m", "app.main"]

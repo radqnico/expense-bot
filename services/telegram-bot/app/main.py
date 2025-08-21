@@ -16,6 +16,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger("bot-spese.telegram-bot")
 
+from .llm import OllamaClient
+from .parser import to_csv_or_nd
+
 
 BOT_NAME: Final = os.getenv("BOT_NAME", "RADQ Expenses Tracker").strip()
 BOT_SHORT_DESCRIPTION: Final = (
@@ -49,7 +52,10 @@ async def cmd_health(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
 async def echo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.message and update.message.text:
-        await update.message.reply_text(update.message.text)
+        text = update.message.text
+        client = OllamaClient()
+        result = to_csv_or_nd(text, client)
+        await update.message.reply_text(result)
 
 
 def get_token() -> str:

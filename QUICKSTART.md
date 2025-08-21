@@ -29,9 +29,9 @@ docker compose up -d
 - Bot logs: `docker logs -f telegram-bot`
 
 ## 5) Use Ollama (optional)
-- Pull a model:
+- Pull the small default model used by the bot:
 ```
-docker exec -it ollama ollama pull llama3
+docker exec -it ollama ollama pull qwen2.5:0.5b
 ```
 - List models:
 ```
@@ -39,6 +39,7 @@ docker exec -it ollama ollama list
 ```
 
 ## Notes
+- The bot uses `OLLAMA_MODEL` (default `qwen2.5:0.5b`). Ensure it is pulled.
 - To run the bot image from a registry, set `TELEGRAM_BOT_IMAGE` in `.env` to your published tag.
 - If you change envs, restart: `docker compose up -d`.
 - For security, keep `.env` out of version control.
