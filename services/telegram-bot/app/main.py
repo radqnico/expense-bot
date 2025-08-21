@@ -122,7 +122,7 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "/last [n] - list last n entries (default 5)\n"
         "/sum [today|week|month|all] - sum amounts (default month)\n"
         "/undo - delete last entry\n"
-        "/export [period] - CSV export for chat\n"
+        "/export [period|YYYY-MM] - CSV export for chat\n"
         "/month YYYY-MM - monthly summary"
     )
 
@@ -209,7 +209,7 @@ async def cmd_export(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     if not chat:
         return
     args = (update.message.text.split()[1:] if update.message and update.message.text else [])
-    period = args[0].lower() if args else None
+    period = args[0] if args else None
     # Build CSV in memory via thread
     def build_csv() -> bytes:
         output = io.StringIO()

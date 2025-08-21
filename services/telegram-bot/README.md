@@ -38,7 +38,7 @@ Commands
 - /last [n]: Show last n entries (default 5).
 - /sum [today|week|month|all]: Sum amounts for period (default month).
 - /undo: Delete last entry.
-- /export [period]: Download CSV for this chat and optional period.
+- /export [period|YYYY-MM]: Download CSV for this chat. Period can be today/week/month/all or a specific month in YYYY-MM.
 - /month YYYY-MM: Monthly summary (income, expenses, net, by day).
 
 Notes

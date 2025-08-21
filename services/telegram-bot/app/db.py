@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from decimal import Decimal
 from typing import Any, Dict, Optional, Iterable, List, Tuple
+import re
 
 import time
 import psycopg
@@ -151,6 +152,32 @@ def delete_last(chatid: int) -> Optional[Tuple[int, str, Decimal, str]]:
 
 
 def fetch_for_export(chatid: int, period: Optional[str] = None) -> Iterable[Tuple[str, int, Decimal, str]]:
+    params = get_conn_params()
+    # Special case: YYYY-MM specific month
+    if period and re.fullmatch(r"\d{4}-\d{2}", period.strip()):
+        year_s, month_s = period.strip().split("-")
+        year, month = int(year_s), int(month_s)
+        with psycopg.connect(**params) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    WITH range AS (
+                        SELECT make_timestamp(%s, %s, 1, 0, 0, 0) at time zone 'UTC' AS start_ts,
+                               (make_timestamp(%s, %s, 1, 0, 0, 0) + interval '1 month') at time zone 'UTC' AS end_ts
+                    )
+                    SELECT to_char(ts at time zone 'UTC', 'YYYY-MM-DD HH24:MI:SS') as ts_str,
+                           chatid, amount, description
+                    FROM transactions t, range r
+                    WHERE t.chatid = %s AND t.ts >= r.start_ts AND t.ts < r.end_ts
+                    ORDER BY ts ASC
+                    """,
+                    (year, month, year, month, chatid),
+                )
+                for row in cur:
+                    yield row
+        return
+
+    # Named periods
     where = "chatid = %s"
     if period:
         p = period.strip().lower()
@@ -164,7 +191,6 @@ def fetch_for_export(chatid: int, period: Optional[str] = None) -> Iterable[Tupl
             pass
         else:
             where += " AND ts >= date_trunc('month', now())"
-    params = get_conn_params()
     with psycopg.connect(**params) as conn:
         with conn.cursor() as cur:
             cur.execute(
