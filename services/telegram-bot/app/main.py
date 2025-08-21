@@ -867,8 +867,9 @@ def main() -> None:
     app.add_handler(CommandHandler("month", cmd_month))
 
     # Fallback echo
-    # Navigation input handler before echo, so it catches keyboard inputs
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_navigation_input))
+    # Navigation input handler before echo, so it catches keyboard inputs.
+    # Set block=False to allow normal echo processing when not in navigation mode.
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_navigation_input, block=False))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, echo))
 
     logger.info("Starting polling...")
