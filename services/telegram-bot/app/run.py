@@ -32,7 +32,7 @@ from .main import (
 )
 
 from .parser import to_csv_or_nd
-from .quick import cmd_expense, cmd_income
+from .handlers.quick import cmd_expense, cmd_income
 from .llm import OllamaClient
 from .db import (
     ensure_schema,
