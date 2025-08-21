@@ -8,7 +8,8 @@ import requests
 
 class OllamaClient:
     def __init__(self, host: Optional[str] = None, model: Optional[str] = None, timeout: float = 10.0):
-        self.host = (host or os.getenv("OLLAMA_HOST") or "http://ollama:11434").rstrip("/")
+        # Default to localhost for non-Docker runs; Docker Compose provides OLLAMA_HOST= http://ollama:11434
+        self.host = (host or os.getenv("OLLAMA_HOST") or "http://localhost:11434").rstrip("/")
         self.model = model or os.getenv("OLLAMA_MODEL") or "qwen2.5:0.5b"
         self.timeout = timeout
 

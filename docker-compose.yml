@@ -36,7 +36,7 @@ services:
     restart: unless-stopped
 
   telegram-bot:
-    image: ${TELEGRAM_BOT_IMAGE:-bot-spese-telegram:dev}
+    build: services/telegram-bot
     container_name: telegram-bot
     environment:
       - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
