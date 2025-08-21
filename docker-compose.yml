@@ -1,3 +1,5 @@
+version: "3.9"
+
 services:
   postgres:
     image: postgres:16-alpine
@@ -18,16 +20,16 @@ services:
       retries: 5
     restart: unless-stopped
 
-  ollama:
-    image: ollama/ollama:latest
-    container_name: ollama
-    ports:
-      - "${OLLAMA_PORT:-11434}:11434"
-    environment:
-      - OLLAMA_KEEP_ALIVE=24h
-    volumes:
-      - ./volumes/ollama:/root/.ollama
-    restart: unless-stopped
+  # ollama:
+  #   image: ollama/ollama:latest
+  #   container_name: ollama
+  #   ports:
+  #     - "${OLLAMA_PORT:-11434}:11434"
+  #   environment:
+  #     - OLLAMA_KEEP_ALIVE=24h
+  #   volumes:
+  #     - ./volumes/ollama:/root/.ollama
+  #   restart: unless-stopped
 
   telegram-bot:
     build: services/telegram-bot
@@ -50,4 +52,3 @@ services:
     depends_on:
       - postgres
     restart: unless-stopped
-
