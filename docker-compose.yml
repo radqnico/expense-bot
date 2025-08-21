@@ -18,8 +18,6 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
-    networks:
-      - backend
     restart: unless-stopped
 
   ollama:
@@ -31,8 +29,6 @@ services:
       - OLLAMA_KEEP_ALIVE=24h
     volumes:
       - ./volumes/ollama:/root/.ollama
-    networks:
-      - backend
     restart: unless-stopped
 
   telegram-bot:
@@ -56,10 +52,5 @@ services:
     depends_on:
       - postgres
       - ollama
-    networks:
-      - backend
     restart: unless-stopped
 
-networks:
-  backend:
-    driver: bridge

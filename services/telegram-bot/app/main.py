@@ -84,12 +84,43 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
-        "/start - greet\n/help - show this message\n/health - check health"
+        "/start - greet\n/help - show this message\n/health - check health\n/status - backend + queue status"
     )
 
 
 async def cmd_health(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text("OK")
+
+
+async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    app = context.application
+    hosts: list[str] = app.bot_data.get(HOSTS_KEY) or parse_ollama_hosts()
+    queues: dict = app.bot_data.get(INFERENCE_QUEUES_KEY) or {}
+    processing: dict = app.bot_data.get(INFERENCE_PROCESSING_KEY) or {}
+
+    alive_list = await asyncio.to_thread(lambda: [ping_host(h) for h in hosts])
+    lines = []
+    chat_id = update.effective_chat.id if update.effective_chat else None
+    for h, alive in zip(hosts, alive_list):
+        q = queues.get(h)
+        qsize = q.qsize() if q else 0
+        is_proc = bool(processing.get(h, False))
+        # Try to estimate user's next position in this host queue
+        pos = None
+        if chat_id is not None and q is not None:
+            try:
+                pending = [it.chat_id for it in list(q._queue)]  # type: ignore[attr-defined]
+                if chat_id in pending:
+                    idx = pending.index(chat_id)
+                    pos = idx + (1 if is_proc else 0) + 1
+            except Exception:
+                pass
+        status = "up" if alive else "down"
+        extra = f", you at #{pos}" if pos is not None else ""
+        lines.append(f"{h} — {status}, queue {qsize}{extra}")
+
+    text = "\n".join(lines) if lines else "No hosts configured"
+    await update.message.reply_text(text)
 
 
 async def echo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -174,6 +205,7 @@ def main() -> None:
             ("start", "Start the bot"),
             ("help", "Show help"),
             ("health", "Health check"),
+            ("status", "Show backend + queue status"),
         ]
 
         try:
@@ -271,6 +303,7 @@ def main() -> None:
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("help", cmd_help))
     app.add_handler(CommandHandler("health", cmd_health))
+    app.add_handler(CommandHandler("status", cmd_status))
 
     # Fallback echo
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, echo))
