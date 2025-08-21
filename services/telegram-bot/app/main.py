@@ -43,6 +43,7 @@ from .db import (
 )
 from decimal import Decimal, InvalidOperation
 from .parser import to_csv_or_nd
+from .importer import read_any_excel_or_csv
 
 INFERENCE_QUEUES_KEY = "inference_queues"  # dict[host]->Queue
 INFERENCE_PROCESSING_KEY = "inference_processing"  # dict[host]->bool
