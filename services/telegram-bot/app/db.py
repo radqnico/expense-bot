@@ -69,6 +69,23 @@ def ensure_schema(retries: int = 30, delay: float = 2.0) -> None:
                             ON transactions(chatid, ts DESC);
                         """
                     )
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        CREATE TABLE IF NOT EXISTS recurrent_ops (
+                            id bigserial PRIMARY KEY,
+                            chatid bigint NOT NULL,
+                            kind text NOT NULL CHECK (kind IN ('daily','weekly','monthly','yearly')),
+                            amount numeric NOT NULL,
+                            description text NOT NULL,
+                            active boolean NOT NULL DEFAULT true,
+                            created_at timestamptz NOT NULL DEFAULT now(),
+                            deleted_at timestamptz NULL,
+                            last_run_date date NULL
+                        );
+                        CREATE INDEX IF NOT EXISTS idx_recurrent_ops_chatid_active ON recurrent_ops(chatid, active);
+                        """
+                    )
                 conn.commit()
             return
         except Exception as e:
@@ -272,6 +289,72 @@ def fetch_for_export(chatid: int, period: Optional[str] = None) -> Iterable[Tupl
                 )
                 for row in cur:
                     yield row
+
+
+# Recurrent operations helpers
+def create_recurrent(chatid: int, kind: str, amount, description: str) -> int:
+    params = get_conn_params()
+    with psycopg.connect(**params) as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO recurrent_ops (chatid, kind, amount, description)
+                VALUES (%s, %s, %s, %s)
+                RETURNING id
+                """, (chatid, kind, amount, description))
+            rid = cur.fetchone()[0]
+        conn.commit()
+    return int(rid)
+
+
+def list_recurrent(chatid: int, include_inactive: bool = True):
+    params = get_conn_params()
+    with psycopg.connect(**params) as conn:
+        with conn.cursor() as cur:
+            if include_inactive:
+                cur.execute("SELECT id, kind, amount, description, active FROM recurrent_ops WHERE chatid=%s ORDER BY id", (chatid,))
+            else:
+                cur.execute("SELECT id, kind, amount, description, active FROM recurrent_ops WHERE chatid=%s AND active=true ORDER BY id", (chatid,))
+            return cur.fetchall()
+
+
+def update_recurrent(chatid: int, rid: int, kind: str, amount, description: str) -> bool:
+    params = get_conn_params()
+    with psycopg.connect(**params) as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                UPDATE recurrent_ops SET kind=%s, amount=%s, description=%s
+                WHERE id=%s AND chatid=%s AND active=true
+                """, (kind, amount, description, rid, chatid))
+            updated = cur.rowcount or 0
+        conn.commit()
+    return updated > 0
+
+
+def deactivate_recurrent(chatid: int, rid: int) -> bool:
+    params = get_conn_params()
+    with psycopg.connect(**params) as conn:
+        with conn.cursor() as cur:
+            cur.execute("UPDATE recurrent_ops SET active=false, deleted_at=now() WHERE id=%s AND chatid=%s AND active=true", (rid, chatid))
+            deleted = cur.rowcount or 0
+        conn.commit()
+    return deleted > 0
+
+
+def get_active_recurrent_pending():
+    params = get_conn_params()
+    with psycopg.connect(**params) as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT id, chatid, kind, amount, description, last_run_date::text FROM recurrent_ops WHERE active=true")
+            return cur.fetchall()
+
+
+def mark_recurrent_ran(rid: int, run_date: str) -> None:
+    params = get_conn_params()
+    with psycopg.connect(**params) as conn:
+        with conn.cursor() as cur:
+            cur.execute("UPDATE recurrent_ops SET last_run_date=%s::date WHERE id=%s", (run_date, rid))
+        conn.commit()
+
         return
 
     # Named periods

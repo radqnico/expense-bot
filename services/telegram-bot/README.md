@@ -35,6 +35,8 @@ Environment
 Commands
 - /help: Show available commands.
 - /status: Backend health + queue info.
+- /expense AMOUNT DESCRIPTION: Insert an expense directly (bypasses LLM). Example: `/expense 12.50 caffè` (amount will be saved as -12.50).
+- /income AMOUNT DESCRIPTION: Insert an income directly (bypasses LLM). Example: `/income 120 stipendio`.
 - /last [n]: Show last n entries (default 5).
 - /sum [today|week|month|all]: Sum amounts for period (default month).
 - /undo: Delete last entry.

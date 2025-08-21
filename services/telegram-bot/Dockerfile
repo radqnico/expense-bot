@@ -25,4 +25,4 @@ ENV TELEGRAM_BOT_TOKEN="" \
     OLLAMA_MODEL="qwen2.5:0.5b" \
     OLLAMA_PULL_ON_START="true"
 
-CMD ["python", "-m", "app.main"]
+CMD ["python", "-m", "app.run"]

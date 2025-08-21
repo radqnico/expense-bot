@@ -41,6 +41,12 @@ from .db import (
     fetch_transactions_in_range,
     update_transaction,
     delete_transaction_by_id,
+    create_recurrent,
+    list_recurrent,
+    update_recurrent,
+    deactivate_recurrent,
+    get_active_recurrent_pending,
+    mark_recurrent_ran,
 )
 from decimal import Decimal, InvalidOperation
 from .parser import to_csv_or_nd
@@ -112,6 +118,8 @@ def get_commands() -> List[Tuple[str, str]]:
         ("help", "Show help"),
         ("health", "Health check"),
         ("status", "Show backend + queue status"),
+        ("expense", "Quick expense: /expense AMOUNT DESCRIPTION"),
+        ("income", "Quick income: /income AMOUNT DESCRIPTION"),
         ("last", "List recent entries"),
         ("sum", "Sum by period (today/week/month/all)"),
         ("undo", "Delete last entry"),
@@ -122,6 +130,9 @@ def get_commands() -> List[Tuple[str, str]]:
         ("reset", "Reset entries: /reset day|month|all"),
         ("month", "Monthly summary: /month YYYY-MM"),
         ("navigation", "Browse/edit: /navigation YYYY-MM-DD YYYY-MM-DD"),
+        ("recur_add", "Create recurrent: KIND AMOUNT DESCRIPTION"),
+        ("recur_list", "List recurrent operations"),
+        ("recur_delete", "Delete recurrent by ID"),
     ]
 
 
@@ -138,6 +149,8 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
         "/start - greet\n/help - show this message\n/health - check health\n"
         "/status - backend + queue status\n"
+        "/expense AMOUNT DESCRIPTION - quick expense (no LLM)\n"
+        "/income AMOUNT DESCRIPTION - quick income (no LLM)\n"
         "/last [n] - list last n entries (default 5)\n"
         "/sum [today|week|month|all] - sum amounts (default month)\n"
         "/undo - delete last entry\n"
@@ -184,6 +197,289 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
     text = "\n".join(lines) if lines else "No hosts configured"
     await update.message.reply_text(text)
+    await update.message.reply_text(text)
+
+# Recurrent operations UX-friendly commands
+_ALLOWED_REC_KIND = {"daily", "weekly", "monthly", "yearly"}
+
+
+def _recur_usage() -> str:
+    return (
+        "Usage:\n"
+        "/recur_add KIND AMOUNT DESCRIPTION\n"
+        "- KIND: daily|weekly|monthly|yearly\n"
+        "- AMOUNT: decimal with dot (e.g., -50.00)\n"
+        "Example: /recur_add monthly -50.00 abbonamento palestra\n\n"
+        "/recur_list [all]\n"
+        "/recur_delete ID\n"
+        "/recur_nav  (keyboard to edit)\n"
+    )
+
+
+async def cmd_recur_add(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat = update.effective_chat
+    if not chat or not (update.message and update.message.text):
+        return
+    parts = update.message.text.split(maxsplit=3)
+    if len(parts) < 4:
+        await update.message.reply_text(_recur_usage())
+        return
+    kind = parts[1].strip().lower()
+    if kind not in _ALLOWED_REC_KIND:
+        await update.message.reply_text("Invalid KIND. Allowed: daily, weekly, monthly, yearly\n\n" + _recur_usage())
+        return
+    try:
+        amount = Decimal(parts[2].strip())
+    except Exception:
+        await update.message.reply_text("Invalid AMOUNT. Use a decimal like -50.00\n\n" + _recur_usage())
+        return
+    desc = parts[3].strip()
+    if not desc:
+        await update.message.reply_text("Missing DESCRIPTION.\n\n" + _recur_usage())
+        return
+
+    rid = await asyncio.to_thread(create_recurrent, int(chat.id), kind, amount, desc)
+    try:
+        await asyncio.to_thread(insert_transaction, int(chat.id), amount, desc)
+    except Exception:
+        pass
+    await update.message.reply_text(
+        f"✅ Recurrent created (ID {rid}): {kind} {amount:+.2f} {desc}\n"
+        f"A corresponding transaction has been inserted."
+    )
+
+
+async def cmd_recur_list(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat = update.effective_chat
+    if not chat:
+        return
+    args = (update.message.text.split()[1:] if update.message and update.message.text else [])
+    include_inactive = bool(args and args[0].lower() == "all")
+    rows = await asyncio.to_thread(list_recurrent, int(chat.id), include_inactive)
+    if not rows:
+        await update.message.reply_text("No recurrent operations.")
+        return
+    lines = ["ID | kind | amount | active | description"]
+    for rid, kind, amount, desc, active in rows:
+        lines.append(f"{rid} | {kind} | {amount:+.2f} | {yes if active else no} | {desc}")
+    footer = "\nUse /recur_delete ID to deactivate or /recur_nav to edit."
+    await update.message.reply_text("\n".join(lines) + footer)
+
+
+async def cmd_recur_delete(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat = update.effective_chat
+    if not chat or not (update.message and update.message.text):
+        return
+    parts = update.message.text.split()
+    if len(parts) < 2:
+        await update.message.reply_text("Usage: /recur_delete ID")
+        return
+    try:
+        rid = int(parts[1])
+    except Exception:
+        await update.message.reply_text("ID must be an integer. Usage: /recur_delete ID")
+        return
+    ok = await asyncio.to_thread(deactivate_recurrent, int(chat.id), rid)
+    if ok:
+        await update.message.reply_text(f"✅ Recurrent {rid} deactivated.")
+    else:
+        await update.message.reply_text("Not found or already inactive.")
+
+
+def _rec_nav_keyboard() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup([["Prev", "Next"], ["Edit", "Deactivate"], ["Exit"]], resize_keyboard=True)
+
+
+async def cmd_recur_nav(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat = update.effective_chat
+    if not chat:
+        return
+    rows = await asyncio.to_thread(list_recurrent, int(chat.id), True)
+    if not rows:
+        await update.message.reply_text("No recurrent operations.")
+        return
+    context.chat_data[REC_NAV_STATE_KEY] = {"rows": rows, "idx": 0, "await_edit": False}
+    await _rec_nav_show_current(update, context)
+
+
+async def _rec_nav_show_current(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat = update.effective_chat
+    if not chat:
+        return
+    state = context.chat_data.get(REC_NAV_STATE_KEY)
+    if not state:
+        return
+    rows = state["rows"]
+    idx = max(0, min(state.get("idx", 0), len(rows) - 1))
+    state["idx"] = idx
+    rid, kind, amount, desc, active = rows[idx]
+    text = (
+        f"[{idx+1}/{len(rows)}]\n"
+        f"ID: {rid}\nKind: {kind}\nAmount: {Decimal(amount):+.2f}\nActive: {yes if active else no}\nDescription: {desc}"
+    )
+    await update.message.reply_text(text, reply_markup=_rec_nav_keyboard())
+
+
+    chat = update.effective_chat
+    if not chat or not update.message or not update.message.text:
+        return
+    state = context.chat_data.get(REC_NAV_STATE_KEY)
+    if not state:
+        return
+    text = update.message.text.strip()
+    rows = state["rows"]
+    idx = state.get("idx", 0)
+
+    if state.get("await_edit"):
+        if text.lower() in {"cancel", "annulla"}:
+            state["await_edit"] = False
+            await update.message.reply_text("Edit cancelled.", reply_markup=_rec_nav_keyboard())
+            return
+        parts = text.split(maxsplit=2)
+        if len(parts) < 3:
+            await update.message.reply_text("Send: KIND AMOUNT DESCRIPTION (or cancel)", reply_markup=_rec_nav_keyboard())
+            return
+        kind = parts[0].lower()
+        if kind not in _ALLOWED_REC_KIND:
+            await update.message.reply_text("Invalid KIND. Allowed: daily|weekly|monthly|yearly", reply_markup=_rec_nav_keyboard())
+            return
+        try:
+            amount = Decimal(parts[1])
+        except Exception:
+            await update.message.reply_text("Invalid AMOUNT. Use decimal like -50.00", reply_markup=_rec_nav_keyboard())
+            return
+        desc = parts[2].strip()
+        rid = rows[idx][0]
+        ok = await asyncio.to_thread(update_recurrent, int(chat.id), int(rid), kind, amount, desc)
+        if ok:
+            rows[idx] = (rid, kind, amount, desc, rows[idx][4])
+            state["await_edit"] = False
+            await update.message.reply_text("Updated.", reply_markup=_rec_nav_keyboard())
+            await _rec_nav_show_current(update, context)
+        else:
+            await update.message.reply_text("Update failed.", reply_markup=_rec_nav_keyboard())
+        return
+
+    cmd = text.lower()
+    if cmd == "prev":
+        if idx > 0:
+            state["idx"] = idx - 1
+        await _rec_nav_show_current(update, context)
+        return
+    if cmd == "next":
+        if idx < len(rows) - 1:
+            state["idx"] = idx + 1
+        await _rec_nav_show_current(update, context)
+        return
+    if cmd == "edit":
+        state["await_edit"] = True
+        await update.message.reply_text("Send new: KIND AMOUNT DESCRIPTION (or cancel)", reply_markup=_rec_nav_keyboard())
+        return
+    if cmd == "deactivate":
+        rid = rows[idx][0]
+        if rows[idx][4]:
+            ok = await asyncio.to_thread(deactivate_recurrent, int(chat.id), int(rid))
+            if ok:
+                rows[idx] = (rows[idx][0], rows[idx][1], rows[idx][2], rows[idx][3], False)
+                await update.message.reply_text("Deactivated.")
+                await _rec_nav_show_current(update, context)
+            else:
+                await update.message.reply_text("Already inactive or not found.")
+        else:
+            await update.message.reply_text("Already inactive. Use /recur_add to create a new one.")
+        return
+    if cmd == "exit":
+        context.chat_data.pop(REC_NAV_STATE_KEY, None)
+        await update.message.reply_text("Recurrent navigation ended.", reply_markup=ReplyKeyboardRemove())
+        return
+    return
+
+
+# Recurrent operations UX-friendly commands
+_ALLOWED_REC_KIND = {"daily", "weekly", "monthly", "yearly"}
+
+
+def _recur_usage() -> str:
+    return (
+        "Usage:\n"
+        "/recur_add KIND AMOUNT DESCRIPTION\n"
+        "- KIND: daily|weekly|monthly|yearly\n"
+        "- AMOUNT: decimal with dot (e.g., -50.00)\n"
+        "Example: /recur_add monthly -50.00 abbonamento palestra\n\n"
+        "/recur_list [all]\n"
+        "/recur_delete ID\n"
+        "/recur_nav  (keyboard to edit)\n"
+    )
+
+
+async def cmd_recur_add(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat = update.effective_chat
+    if not chat or not (update.message and update.message.text):
+        return
+    parts = update.message.text.split(maxsplit=3)
+    if len(parts) < 4:
+        await update.message.reply_text(_recur_usage())
+        return
+    kind = parts[1].strip().lower()
+    if kind not in _ALLOWED_REC_KIND:
+        await update.message.reply_text("Invalid KIND. Allowed: daily, weekly, monthly, yearly\n\n" + _recur_usage())
+        return
+    try:
+        amount = Decimal(parts[2].strip())
+    except Exception:
+        await update.message.reply_text("Invalid AMOUNT. Use a decimal like -50.00\n\n" + _recur_usage())
+        return
+    desc = parts[3].strip()
+    if not desc:
+        await update.message.reply_text("Missing DESCRIPTION.\n\n" + _recur_usage())
+        return
+
+    rid = await asyncio.to_thread(create_recurrent, int(chat.id), kind, amount, desc)
+    try:
+        await asyncio.to_thread(insert_transaction, int(chat.id), amount, desc)
+    except Exception:
+        pass
+    await update.message.reply_text(
+        f"✅ Recurrent created (ID {rid}): {kind} {amount:+.2f} {desc}\n"
+        f"A corresponding transaction has been inserted."
+    )
+
+
+async def cmd_recur_list(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat = update.effective_chat
+    if not chat:
+        return
+    args = (update.message.text.split()[1:] if update.message and update.message.text else [])
+    include_inactive = bool(args and args[0].lower() == "all")
+    rows = await asyncio.to_thread(list_recurrent, int(chat.id), include_inactive)
+    if not rows:
+        await update.message.reply_text("No recurrent operations.")
+        return
+    lines = ["ID | kind | amount | active | description"]
+    for rid, kind, amount, desc, active in rows:
+        lines.append(f"{rid} | {kind} | {amount:+.2f} | {'yes' if active else 'no'} | {desc}")
+    footer = "\nUse /recur_delete ID to deactivate or /recur_nav to edit."
+    await update.message.reply_text("\n".join(lines) + footer)
+
+
+async def cmd_recur_delete(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat = update.effective_chat
+    if not chat or not (update.message and update.message.text):
+        return
+    parts = update.message.text.split()
+    if len(parts) < 2:
+        await update.message.reply_text("Usage: /recur_delete ID")
+        return
+    try:
+        rid = int(parts[1])
+    except Exception:
+        await update.message.reply_text("ID must be an integer. Usage: /recur_delete ID")
+        return
+    ok = await asyncio.to_thread(deactivate_recurrent, int(chat.id), rid)
+    if ok:
+        await update.message.reply_text(f"✅ Recurrent {rid} deactivated.")
+    else:
+        await update.message.reply_text("Not found or already inactive.")
 
 
 def _choose_ollama_client(app: Application) -> OllamaClient:
@@ -536,7 +832,11 @@ async def cmd_smartreport(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 pass
             return
 
-        lock = app.bot_data.get(OLLAMA_LOCK_KEY); if (!defined ) {  = threading.Lock();  =  } client = _LockedOllama(_choose_ollama_client(app), lock)
+        lock = app.bot_data.get(OLLAMA_LOCK_KEY)
+        if lock is None:
+            lock = threading.Lock()
+            app.bot_data[OLLAMA_LOCK_KEY] = lock
+        client = _LockedOllama(_choose_ollama_client(app), lock)
         keep_flags: list[bool] = []
         CHUNK = 60
         for i in range(0, len(rows), CHUNK):
@@ -1220,6 +1520,10 @@ def main() -> None:
     app.add_handler(CommandHandler("export", cmd_export))
     app.add_handler(CommandHandler("import", cmd_import))
     app.add_handler(CommandHandler("report", cmd_report))
+    app.add_handler(CommandHandler("report", cmd_report))
+    app.add_handler(CommandHandler("recur_add", cmd_recur_add))
+    app.add_handler(CommandHandler("recur_list", cmd_recur_list))
+    app.add_handler(CommandHandler("recur_delete", cmd_recur_delete))
     app.add_handler(CommandHandler("smartreport", cmd_smartreport))
     app.add_handler(CommandHandler("navigation", cmd_navigation))
     app.add_handler(CommandHandler("reset", cmd_reset))

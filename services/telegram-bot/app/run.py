@@ -1,0 +1,305 @@
+import logging
+import os
+import sys
+import asyncio
+from dataclasses import dataclass
+from typing import Final, List, Tuple
+import requests
+
+from telegram import BotCommand
+from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
+
+LOG_LEVEL: Final = os.getenv("LOG_LEVEL", "INFO").upper()
+logging.basicConfig(
+    level=getattr(logging, LOG_LEVEL, logging.INFO),
+    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+    stream=sys.stdout,
+)
+logger = logging.getLogger("bot-spese.telegram-bot")
+
+# Import handlers from the existing module to avoid duplicating logic
+from .handlers.basic import cmd_start, cmd_help, cmd_health, cmd_status
+from .handlers.reports import cmd_report, cmd_smartreport
+from .handlers.navigation import cmd_navigation, handle_navigation_input
+from .handlers.recurrent import cmd_recur_add, cmd_recur_list, cmd_recur_delete
+from .main import (
+    cmd_last,
+    cmd_sum,
+    cmd_undo,
+    cmd_export,
+    cmd_reset,
+    cmd_month,
+)
+
+from .parser import to_csv_or_nd
+from .llm import OllamaClient
+from .db import (
+    ensure_schema,
+    insert_transaction,
+    fetch_description_candidates,
+)
+
+from decimal import Decimal, InvalidOperation
+
+# Minimal constants (duplicated to keep this thin and independent)
+INFERENCE_QUEUES_KEY = "inference_queues"
+INFERENCE_PROCESSING_KEY = "inference_processing"
+HOSTS_KEY = "ollama_hosts"
+HOST_RR_INDEX_KEY = "host_rr_index"
+OLLAMA_LOCK_KEY = "ollama_lock"
+NAV_STATE_KEY = "nav_state"
+
+
+def _normalize_host(h: str) -> str:
+    h = h.strip().rstrip("/")
+    if not h:
+        return h
+    if "://" not in h:
+        h = f"http://{h}"
+    return h
+
+
+def parse_ollama_hosts() -> list[str]:
+    raw = os.getenv("OLLAMA_HOSTS") or os.getenv("OLLAMA_HOST") or "localhost:11434"
+    parts = [p.strip() for p in raw.split(",") if p.strip()]
+    hosts = [_normalize_host(p) for p in parts]
+    return hosts or ["http://localhost:11434"]
+
+
+async def echo(update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not (update.message and update.message.text):
+        return
+    if context.chat_data.get(NAV_STATE_KEY):
+        try:
+            await update.message.reply_text(
+                "Navigation mode is active. Use /navigation to exit before inserting transactions."
+            )
+        except Exception:
+            pass
+        return
+
+    text = update.message.text
+    chat = update.effective_chat
+    if not chat:
+        return
+
+    app = context.application
+    hosts: list[str] = app.bot_data.get(HOSTS_KEY) or parse_ollama_hosts()
+    queues: dict = app.bot_data.get(INFERENCE_QUEUES_KEY) or {}
+    processing: dict = app.bot_data.get(INFERENCE_PROCESSING_KEY) or {}
+    app.bot_data[HOSTS_KEY] = hosts
+    app.bot_data[INFERENCE_QUEUES_KEY] = queues
+    app.bot_data[INFERENCE_PROCESSING_KEY] = processing
+
+    # Check Ollama availability; if none available, inform the user
+    def _alive_list():
+        out = []
+        for h in hosts:
+            try:
+                r = requests.get(f"{h.rstrip('/')}/api/version", timeout=1.5)
+                out.append(r.ok)
+            except Exception:
+                out.append(False)
+        return out
+    alive_list = await asyncio.to_thread(_alive_list)
+    alive_hosts = [h for h, alive in zip(hosts, alive_list) if alive]
+    if not alive_hosts:
+        try:
+            await update.message.reply_text(
+                "⚠️ Nessuna istanza Ollama disponibile al momento. Riprova più tardi."
+            )
+        except Exception:
+            pass
+        return
+    rr = app.bot_data.get(HOST_RR_INDEX_KEY, 0)
+    host = alive_hosts[rr % len(alive_hosts)]
+    app.bot_data[HOST_RR_INDEX_KEY] = rr + 1
+
+    q: asyncio.Queue = queues.get(host)
+    if q is None:
+        q = asyncio.Queue()
+        queues[host] = q
+
+    position = q.qsize() + (1 if processing.get(host, False) else 0) + 1
+    try:
+        if position > 1:
+            await update.message.reply_text(
+                f"⏳ Occupato. Sei in coda (#{position}). Ti avviso appena pronto."
+            )
+        else:
+            await update.message.reply_text("🚀 Elaboro il tuo messaggio…")
+    except Exception:
+        pass
+
+    await q.put((chat.id, update.message.message_id, text))
+
+
+def _parse_amount_token(tok: str) -> Decimal:
+    s = tok.strip().replace(",", ".")
+    return Decimal(s)
+
+
+async def cmd_expense(update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat = update.effective_chat
+    if not chat or not (update.message and update.message.text):
+        return
+    parts = update.message.text.split(maxsplit=2)
+    if len(parts) < 3:
+        await update.message.reply_text("Usage: /expense AMOUNT DESCRIPTION")
+        return
+    try:
+        amt = _parse_amount_token(parts[1])
+    except Exception:
+        await update.message.reply_text("Invalid amount. Example: /expense 12.50 caffè")
+        return
+    # Force negative for expense
+    amount = -abs(amt)
+    desc = parts[2].strip()
+    try:
+        await asyncio.to_thread(insert_transaction, int(chat.id), amount, desc)
+    except Exception as e:
+        await update.message.reply_text(f"Insert failed: {e}")
+        return
+    await update.message.reply_text(
+        f"✅ 💸 Spesa registrata\nImporto: {amount:+.2f}\nDescrizione: {desc}",
+        reply_to_message_id=update.message.message_id,
+    )
+
+
+async def cmd_income(update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat = update.effective_chat
+    if not chat or not (update.message and update.message.text):
+        return
+    parts = update.message.text.split(maxsplit=2)
+    if len(parts) < 3:
+        await update.message.reply_text("Usage: /income AMOUNT DESCRIPTION")
+        return
+    try:
+        amt = _parse_amount_token(parts[1])
+    except Exception:
+        await update.message.reply_text("Invalid amount. Example: /income 120 stipendio")
+        return
+    # Force positive for income
+    amount = abs(amt)
+    desc = parts[2].strip()
+    try:
+        await asyncio.to_thread(insert_transaction, int(chat.id), amount, desc)
+    except Exception as e:
+        await update.message.reply_text(f"Insert failed: {e}")
+        return
+    await update.message.reply_text(
+        f"✅ 💰 Entrata registrata\nImporto: {amount:+.2f}\nDescrizione: {desc}",
+        reply_to_message_id=update.message.message_id,
+    )
+
+
+async def register_workers(app: Application) -> None:
+    hosts: list[str] = app.bot_data.get(HOSTS_KEY) or parse_ollama_hosts()
+    app.bot_data[HOSTS_KEY] = hosts
+    app.bot_data[INFERENCE_QUEUES_KEY] = {h: asyncio.Queue() for h in hosts}
+    app.bot_data[INFERENCE_PROCESSING_KEY] = {h: False for h in hosts}
+
+    async def worker(host: str) -> None:
+        q: asyncio.Queue = app.bot_data[INFERENCE_QUEUES_KEY][host]
+        client = OllamaClient(host=host)
+        while True:
+            chat_id, message_id, text = await q.get()
+            app.bot_data[INFERENCE_PROCESSING_KEY][host] = True
+            try:
+                # LLM + parse
+                candidates = await asyncio.to_thread(fetch_description_candidates, int(chat_id), 50)
+                result = await asyncio.to_thread(to_csv_or_nd, text, client, candidates)
+
+                reply_text = None
+                try:
+                    if "," in result and result.upper() != "ND":
+                        amount_str, description = result.split(",", 1)
+                        amount = Decimal(amount_str.strip())
+                        await asyncio.to_thread(insert_transaction, int(chat_id), amount, description.strip())
+                        kind = "Entrata" if amount >= 0 else "Spesa"
+                        emoji = "💰" if amount >= 0 else "💸"
+                        reply_text = (
+                            f"✅ {emoji} {kind} registrata\n"
+                            f"Importo: {amount:+.2f}\n"
+                            f"Descrizione: {description.strip()}"
+                        )
+                    else:
+                        reply_text = (
+                            "⚠️ Non determinato. Assicurati di includere un importo e una descrizione."
+                        )
+                except (InvalidOperation, Exception):
+                    reply_text = (
+                        "⚠️ Errore nell'inserimento. Controlla il formato e riprova."
+                    )
+                try:
+                    await app.bot.send_message(chat_id=chat_id, text=reply_text or result, reply_to_message_id=message_id)
+                except Exception:
+                    pass
+            finally:
+                q.task_done()
+                app.bot_data[INFERENCE_PROCESSING_KEY][host] = False
+
+    # Start one worker per host
+    for h in hosts:
+        app.create_task(worker(h))
+
+
+def main() -> None:
+    ensure_schema()
+
+    app = Application.builder().token(os.getenv("TELEGRAM_BOT_TOKEN", "").strip()).concurrent_updates(True).build()
+
+    # Register commands
+    commands: List[Tuple[str, str]] = [
+        ("start", "Start the bot"),
+        ("help", "Show help"),
+        ("health", "Health check"),
+        ("status", "Show backend + queue status"),
+        ("last", "List recent entries"),
+        ("sum", "Sum by period (today/week/month/all)"),
+        ("undo", "Delete last entry"),
+        ("export", "Export CSV"),
+        ("report", "Charts + PDF"),
+        ("smartreport", "LLM filtered report"),
+        ("expense", "Quick expense: /expense AMOUNT DESCRIPTION"),
+        ("income", "Quick income: /income AMOUNT DESCRIPTION"),
+        ("navigation", "Browse/edit transactions"),
+        ("reset", "Reset entries in period"),
+        ("month", "Monthly summary"),
+        ("recur_add", "Create recurrent op"),
+        ("recur_list", "List recurrent ops"),
+        ("recur_delete", "Delete recurrent op"),
+    ]
+    app.add_handler(CommandHandler("start", cmd_start))
+    app.add_handler(CommandHandler("help", cmd_help))
+    app.add_handler(CommandHandler("health", cmd_health))
+    app.add_handler(CommandHandler("status", cmd_status))
+    app.add_handler(CommandHandler("last", cmd_last))
+    app.add_handler(CommandHandler("sum", cmd_sum))
+    app.add_handler(CommandHandler("undo", cmd_undo))
+    app.add_handler(CommandHandler("export", cmd_export))
+    app.add_handler(CommandHandler("report", cmd_report))
+    app.add_handler(CommandHandler("smartreport", cmd_smartreport))
+    app.add_handler(CommandHandler("expense", cmd_expense))
+    app.add_handler(CommandHandler("income", cmd_income))
+    app.add_handler(CommandHandler("navigation", cmd_navigation))
+    app.add_handler(CommandHandler("reset", cmd_reset))
+    app.add_handler(CommandHandler("month", cmd_month))
+    app.add_handler(CommandHandler("recur_add", cmd_recur_add))
+    app.add_handler(CommandHandler("recur_list", cmd_recur_list))
+    app.add_handler(CommandHandler("recur_delete", cmd_recur_delete))
+
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_navigation_input, block=False), group=0)
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, echo), group=1)
+
+    async def post_init(application: Application) -> None:
+        await application.bot.set_my_commands([BotCommand(c, d) for c, d in commands])
+        await register_workers(application)
+
+    app.post_init = post_init  # type: ignore
+    logger.info("Starting polling (run.py)…")
+    app.run_polling(close_loop=False)
+
+
+if __name__ == "__main__":
+    main()
