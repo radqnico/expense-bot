@@ -370,6 +370,33 @@ async def cmd_report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         )
         ax4.text(0.05, 0.95, text, va="top", ha="left", fontsize=12)
         pdf.savefig(fig4)
+        plt.close(fig4)
+
+        # Transactions list pages (monospace), paginated
+        header = "Timestamp           Amount    Description"
+        lines = [
+            f"{ts.strftime('%Y-%m-%d %H:%M'):19}  {a:+9.2f}  {d}"
+            for ts, a, d in parsed
+        ]
+        # Reasonable number of lines per page considering margins/font size
+        LPP = 36
+        if lines:
+            for i in range(0, len(lines), LPP):
+                chunk = lines[i : i + LPP]
+                figp, axp = plt.subplots(figsize=(8.27, 11.69))  # A4 portrait size in inches
+                axp.axis("off")
+                page_text = "\n".join([header, "-" * len(header)] + chunk)
+                axp.text(
+                    0.03,
+                    0.97,
+                    page_text,
+                    va="top",
+                    ha="left",
+                    family="monospace",
+                    fontsize=9,
+                )
+                pdf.savefig(figp)
+                plt.close(figp)
     pdf_bytes.seek(0)
 
     # Send images
