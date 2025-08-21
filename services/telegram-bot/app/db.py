@@ -6,6 +6,8 @@ from typing import Any, Dict, Optional
 
 import time
 import psycopg
+from psycopg import sql
+from psycopg.errors import InvalidCatalogName
 
 
 def _env(name: str, default: Optional[str] = None) -> Optional[str]:
@@ -26,11 +28,30 @@ def get_conn_params() -> Dict[str, Any]:
     }
 
 
+def _ensure_database(params: Dict[str, Any]) -> None:
+    """Ensure target database exists; create it if missing using maintenance DB 'postgres'."""
+    try:
+        with psycopg.connect(**params) as _conn:
+            return  # DB exists and is connectable
+    except InvalidCatalogName:
+        maint = dict(params)
+        maint["dbname"] = "postgres"
+        dbname = params["dbname"]
+        owner = params.get("user")
+        with psycopg.connect(**maint) as conn:
+            conn.execute(sql.SQL("CREATE DATABASE {} OWNER {}" ).format(
+                sql.Identifier(dbname), sql.Identifier(owner)
+            ))
+            conn.commit()
+
+
 def ensure_schema(retries: int = 30, delay: float = 2.0) -> None:
     params = get_conn_params()
     last_err: Optional[Exception] = None
     for _ in range(max(1, retries)):
         try:
+            # First ensure the database exists
+            _ensure_database(params)
             with psycopg.connect(**params) as conn:
                 with conn.cursor() as cur:
                     cur.execute(
