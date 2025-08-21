@@ -307,10 +307,21 @@ def main() -> None:
     if pull_on_start:
         hosts = parse_ollama_hosts()
         for h in hosts:
+            # Ping first to avoid long hangs if host is down
+            alive = False
+            try:
+                alive = ping_host(h, timeout=2.0)
+            except Exception:
+                alive = False
+            if not alive:
+                logger.warning("Skip model pull: Ollama host not reachable: %s", h)
+                continue
+
             client = OllamaClient(host=h)
             try:
                 logger.info("Ensuring model is available on %s: %s", h, client.model)
-                client.pull_model()
+                # Use a bounded timeout per pull request to avoid long hangs
+                client.pull_model(timeout=180.0)
                 logger.info("Model ready on %s: %s", h, client.model)
             except Exception as e:
                 logger.warning("Could not pull model on %s: %s", h, e)
