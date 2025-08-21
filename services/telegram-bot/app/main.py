@@ -893,8 +893,8 @@ def main() -> None:
     # Fallback echo
     # Navigation input handler before echo, so it catches keyboard inputs.
     # Set block=False to allow normal echo processing when not in navigation mode.
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_navigation_input, block=False))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, echo))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_navigation_input, block=False), group=0)
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, echo), group=1)
 
     logger.info("Starting polling...")
     app.run_polling(close_loop=False)
