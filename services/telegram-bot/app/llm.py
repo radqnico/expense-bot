@@ -7,11 +7,13 @@ import requests
 
 
 class OllamaClient:
-    def __init__(self, host: Optional[str] = None, model: Optional[str] = None, timeout: float = 10.0):
+    def __init__(self, host: Optional[str] = None, model: Optional[str] = None, timeout: Optional[float] = None):
         # Default to localhost for non-Docker runs; Docker Compose provides OLLAMA_HOST= http://ollama:11434
         self.host = (host or os.getenv("OLLAMA_HOST") or "http://localhost:11434").rstrip("/")
         self.model = model or os.getenv("OLLAMA_MODEL") or "qwen2.5:0.5b"
-        self.timeout = timeout
+        # Use env override for timeout; default to 60s to avoid server-side context cancellations
+        env_timeout = os.getenv("OLLAMA_TIMEOUT_SECONDS") or os.getenv("OLLAMA_REQUEST_TIMEOUT")
+        self.timeout = float(timeout if timeout is not None else (env_timeout or 60))
 
     def generate(self, prompt: str) -> str:
         url = f"{self.host}/api/generate"
