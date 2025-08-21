@@ -61,3 +61,20 @@ class OllamaClient:
         # Best effort: if still failing, raise last error
         if last_err:
             raise last_err
+
+    def has_model(self, name: Optional[str] = None, timeout: float = 5.0) -> bool:
+        """Return True if the model is present locally, using /api/show.
+
+        This is a quick check; if Ollama doesn't support /api/show, we fallback to False.
+        """
+        model = name or self.model
+        url = f"{self.host}/api/show"
+        try:
+            r = requests.post(url, json={"name": model}, timeout=timeout)
+            if not r.ok:
+                return False
+            data = r.json() if r.headers.get("Content-Type", "").startswith("application/json") else None
+            # If we get any JSON back, assume model exists
+            return bool(data)  # conservative True on non-empty JSON
+        except Exception:
+            return False

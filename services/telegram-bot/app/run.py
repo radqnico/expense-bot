@@ -196,52 +196,83 @@ async def register_workers(app: Application) -> None:
 
     # Background task: ensure the selected model is available on all hosts
     async def ensure_models_task() -> None:
-        # One immediate pass, then periodic checks
         ready: dict[str, bool] = app.bot_data.get(MODEL_READY_KEY) or {}
         app.bot_data[MODEL_READY_KEY] = ready
 
-        async def _ping(h: str) -> bool:
-            try:
-                r = await asyncio.to_thread(requests.get, f"{h.rstrip('/')}/api/version",)
-                return bool(getattr(r, "ok", False))
-            except Exception:
-                return False
+        # Tunables
+        try:
+            interval = float(os.getenv("OLLAMA_ENSURE_INTERVAL_SECONDS", 60))
+        except Exception:
+            interval = 60.0
+        try:
+            ping_timeout = float(os.getenv("OLLAMA_PING_TIMEOUT_SECONDS", 2))
+        except Exception:
+            ping_timeout = 2.0
+        try:
+            pull_timeout = float(os.getenv("OLLAMA_PULL_TIMEOUT_SECONDS", 600))
+        except Exception:
+            pull_timeout = 600.0
+
+        async def _ping_with_retries(h: str, attempts: int = 3, delay: float = 0.5) -> bool:
+            for i in range(max(1, attempts)):
+                try:
+                    r = await asyncio.to_thread(
+                        requests.get, f"{h.rstrip('/')}/api/version", None, None, None, None, ping_timeout
+                    )
+                    if getattr(r, "ok", False):
+                        return True
+                except Exception:
+                    pass
+                await asyncio.sleep(delay)
+            return False
 
         async def _ensure_on(h: str) -> None:
             client = OllamaClient(host=h)
+            # Fast path: model present
             try:
-                # Perform pull in thread to avoid blocking the loop
-                await asyncio.to_thread(client.pull_model)
+                has = await asyncio.to_thread(client.has_model, None, min(10.0, pull_timeout))
+            except Exception:
+                has = False
+            if has:
                 ready[h] = True
                 try:
-                    logger.info("Ollama model ensured on %s: %s", h, client.model)
+                    logger.info("Ollama model present on %s: %s", h, client.model)
+                except Exception:
+                    pass
+                return
+
+            # Otherwise pull with limited retries and timeout
+            try:
+                await asyncio.to_thread(client.pull_model, None, 3, 5.0, pull_timeout)
+                ready[h] = True
+                try:
+                    logger.info("Ollama model pulled on %s: %s", h, client.model)
                 except Exception:
                     pass
             except Exception as e:
                 ready[h] = False
                 try:
-                    logger.warning("Ollama model ensure failed on %s: %s", h, e)
+                    logger.warning("Ollama model pull failed on %s: %s", h, e)
                 except Exception:
                     pass
 
-        # Initial pass
-        for h in hosts:
-            if await _ping(h):
-                if not ready.get(h, False):
-                    await _ensure_on(h)
-
-        # Periodic re-check for hosts coming online later
+        # Main loop
         while True:
-            await asyncio.sleep(60)
-            # Hosts list may have been updated; re-read
             _hosts = app.bot_data.get(HOSTS_KEY) or parse_ollama_hosts()
             for h in _hosts:
-                if await _ping(h):
-                    if not ready.get(h, False):
-                        await _ensure_on(h)
-                else:
-                    # If host is offline, mark as not ready so we re-pull when it returns
-                    ready[h] = False
+                alive = await _ping_with_retries(h)
+                if not alive:
+                    if ready.get(h, True):
+                        ready[h] = False
+                        try:
+                            logger.info("Ollama host down: %s", h)
+                        except Exception:
+                            pass
+                    continue
+                # Host is up — ensure model
+                if not ready.get(h, False):
+                    await _ensure_on(h)
+            await asyncio.sleep(max(5.0, interval))
 
     app.create_task(ensure_models_task())
 
