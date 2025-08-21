@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from decimal import Decimal
 from typing import Any, Dict, Optional, Iterable, List, Tuple
+import datetime as dt
 import re
 
 import time
@@ -89,6 +90,27 @@ def insert_transaction(chatid: int, amount: Decimal, description: str) -> None:
                 (chatid, amount, description),
             )
         conn.commit()
+
+
+def bulk_insert_transactions(chatid: int, rows: List[Tuple[dt.datetime, Decimal, str]]) -> int:
+    """Insert many rows with explicit timestamps.
+
+    rows: list of (ts, amount, description). Returns inserted count.
+    """
+    if not rows:
+        return 0
+    params = get_conn_params()
+    with psycopg.connect(**params) as conn:
+        with conn.cursor() as cur:
+            cur.executemany(
+                """
+                INSERT INTO transactions (ts, chatid, amount, description)
+                VALUES (%s, %s, %s, %s)
+                """,
+                [(ts, chatid, amt, desc) for ts, amt, desc in rows],
+            )
+        conn.commit()
+    return len(rows)
 
 
 def fetch_description_candidates(chatid: int, limit: int = 50) -> List[str]:

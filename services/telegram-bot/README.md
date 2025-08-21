@@ -42,6 +42,8 @@ Commands
 - /report day|week|month|year: Sends charts (cumulative net, daily income/expenses, top expenses) and a PDF summary for the period.
 - /reset day|month|all: Delete entries for the given period.
 - /month YYYY-MM: Monthly summary (income, expenses, net, by day).
+- /import: Send a JSON file or reply to one to import transactions. Format:
+  [{"data":"2025-08-19","importo":-0.17,"operazione":"Pagamento Effettuato Su Pos Estero","categoria":"Altre uscite"}, ...]
 
 Notes
 - Uses long polling; no public URL/webhook needed.

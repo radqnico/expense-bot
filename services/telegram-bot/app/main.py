@@ -8,6 +8,7 @@ import requests
 import csv
 import io
 import datetime as dt
+import json
 from typing import Final, List, Tuple
 
 from telegram import BotCommand, Update
@@ -27,6 +28,7 @@ from .llm import OllamaClient
 from .db import (
     ensure_schema,
     insert_transaction,
+    bulk_insert_transactions,
     fetch_recent,
     sum_period,
     delete_last,
@@ -105,6 +107,7 @@ def get_commands() -> List[Tuple[str, str]]:
         ("sum", "Sum by period (today/week/month/all)"),
         ("undo", "Delete last entry"),
         ("export", "Export CSV: /export YYYY-MM|day|week|month|year"),
+        ("import", "Import JSON: send file or reply"),
         ("report", "Charts + PDF: /report day|week|month|year"),
         ("reset", "Reset entries: /reset day|month|all"),
         ("month", "Monthly summary: /month YYYY-MM"),
@@ -128,6 +131,7 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "/sum [today|week|month|all] - sum amounts (default month)\n"
         "/undo - delete last entry\n"
         "/export [YYYY-MM|day|week|month|year] - CSV export\n"
+        "/import - send a JSON file (or reply to one)\n"
         "/report day|week|month|year - charts + PDF\n"
         "/reset day|month|all - delete entries in period\n"
         "/month YYYY-MM - monthly summary"
@@ -368,6 +372,80 @@ async def cmd_report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     # Send PDF
     pdf_bytes.name = f"report_{period}_{chat.id}.pdf"
     await context.bot.send_document(chat_id=chat.id, document=pdf_bytes, filename=pdf_bytes.name, caption=f"Report {period}")
+
+
+async def cmd_import(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Import JSON transactions from a file, a replied file, or inline JSON."""
+    chat = update.effective_chat
+    if not chat:
+        return
+    # Try sources in order: document in this message, replied document, inline JSON text after command
+    content_bytes: bytes | None = None
+    # 1) This message has a document
+    if update.message and update.message.document:
+        try:
+            file = await context.bot.get_file(update.message.document.file_id)
+            content_bytes = await file.download_as_bytearray()
+        except Exception:
+            content_bytes = None
+    # 2) Replied message has a document
+    if content_bytes is None and update.message and update.message.reply_to_message and update.message.reply_to_message.document:
+        try:
+            file = await context.bot.get_file(update.message.reply_to_message.document.file_id)
+            content_bytes = await file.download_as_bytearray()
+        except Exception:
+            content_bytes = None
+    # 3) Inline JSON in message text after command
+    if content_bytes is None and update.message and update.message.text:
+        parts = update.message.text.split(" ", 1)
+        if len(parts) > 1:
+            content_bytes = parts[1].encode("utf-8", "ignore")
+
+    if not content_bytes:
+        await update.message.reply_text("Send a JSON file or reply to one with /import")
+        return
+
+    try:
+        data = json.loads(content_bytes.decode("utf-8", "ignore"))
+    except Exception:
+        await update.message.reply_text("Invalid JSON.")
+        return
+    if not isinstance(data, list):
+        await update.message.reply_text("JSON must be a list of objects.")
+        return
+
+    rows = []
+    inserted = 0
+    skipped = 0
+    for obj in data:
+        try:
+            date_str = obj.get("data") or obj.get("date")
+            amt_raw = obj.get("importo") if "importo" in obj else obj.get("amount")
+            op = (obj.get("operazione") or obj.get("descrizione") or obj.get("description") or "").strip()
+            cat = (obj.get("categoria") or obj.get("category") or "").strip()
+            if not date_str or amt_raw is None:
+                skipped += 1
+                continue
+            ts = dt.datetime.strptime(str(date_str), "%Y-%m-%d").replace(tzinfo=dt.timezone.utc)
+            amount = Decimal(str(amt_raw))
+            desc = op if op else (cat or "")
+            if cat and cat.lower() not in desc.lower():
+                desc = f"{desc} [{cat}]" if desc else cat
+            rows.append((ts, amount, desc))
+        except Exception:
+            skipped += 1
+    # Limit batch size for safety
+    MAX_BATCH = 5000
+    rows = rows[:MAX_BATCH]
+    if not rows:
+        await update.message.reply_text("Nothing to import.")
+        return
+    try:
+        inserted = await asyncio.to_thread(bulk_insert_transactions, int(chat.id), rows)
+    except Exception as e:
+        await update.message.reply_text(f"Import failed: {e}")
+        return
+    await update.message.reply_text(f"Imported {inserted} entrie(s). Skipped {skipped}.")
 
 
 async def cmd_reset(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -622,6 +700,7 @@ def main() -> None:
     app.add_handler(CommandHandler("sum", cmd_sum))
     app.add_handler(CommandHandler("undo", cmd_undo))
     app.add_handler(CommandHandler("export", cmd_export))
+    app.add_handler(CommandHandler("import", cmd_import))
     app.add_handler(CommandHandler("report", cmd_report))
     app.add_handler(CommandHandler("reset", cmd_reset))
     app.add_handler(CommandHandler("month", cmd_month))
