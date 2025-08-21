@@ -13,9 +13,10 @@ Run
     -e BOT_NAME="RADQ Expenses Tracker" \
     -e BOT_SHORT_DESCRIPTION="Track expenses easily with RADQ." \
     -e BOT_DESCRIPTION="A simple expenses tracker bot. Use /help to see commands." \
-    -e OLLAMA_HOST=http://host.docker.internal:11434 \
+    -e OLLAMA_HOSTS=http://host.docker.internal:11434 \
     -e OLLAMA_MODEL=qwen2.5:0.5b \
     -e OLLAMA_PULL_ON_START=true \
+    -e DB_HOST=postgres -e DB_PORT=5432 -e DB_NAME=appdb -e DB_USER=app -e DB_PASSWORD=app \
     --name bot-spese-telegram \
     bot-spese-telegram:dev
 
@@ -24,9 +25,12 @@ Environment
 - BOT_NAME: Public bot name to show in profile.
 - BOT_SHORT_DESCRIPTION: Short description (shown in profile).
 - BOT_DESCRIPTION: Full description (shown in profile).
-- OLLAMA_HOST: Ollama API base URL (default in compose: http://ollama:11434).
+- OLLAMA_HOSTS: One or more Ollama API base URLs, comma-separated. Each can be
+  either a bare `host:port` or full URL. The bot pings all on each message and
+  round-robins across available instances. (default in compose: http://ollama:11434)
 - OLLAMA_MODEL: Small model name, e.g. `qwen2.5:0.5b`.
 - OLLAMA_PULL_ON_START: Pull the model on startup (true/false).
+- DB_HOST/DB_PORT/DB_NAME/DB_USER/DB_PASSWORD: Postgres connection for persistence.
 
 Notes
 - Uses long polling; no public URL/webhook needed.

@@ -156,16 +156,18 @@ def get_token() -> str:
 def main() -> None:
     token = get_token()
 
-    # Optionally pull model on start
+    # Optionally pull model on start on all configured hosts
     pull_on_start = os.getenv("OLLAMA_PULL_ON_START", "true").lower() not in {"0", "false", "no"}
     if pull_on_start:
-        client = OllamaClient()
-        try:
-            logger.info("Ensuring model is available: %s", client.model)
-            client.pull_model()
-            logger.info("Model ready: %s", client.model)
-        except Exception as e:
-            logger.warning("Could not pull model on start: %s", e)
+        hosts = parse_ollama_hosts()
+        for h in hosts:
+            client = OllamaClient(host=h)
+            try:
+                logger.info("Ensuring model is available on %s: %s", h, client.model)
+                client.pull_model()
+                logger.info("Model ready on %s: %s", h, client.model)
+            except Exception as e:
+                logger.warning("Could not pull model on %s: %s", h, e)
 
     async def post_init(application: Application) -> None:
         commands: List[Tuple[str, str]] = [
