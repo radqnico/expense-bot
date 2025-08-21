@@ -5,6 +5,8 @@ import sys
 import asyncio
 from dataclasses import dataclass
 import requests
+import csv
+import io
 from typing import Final, List, Tuple
 
 from telegram import BotCommand, Update
@@ -21,7 +23,7 @@ logging.basicConfig(
 logger = logging.getLogger("bot-spese.telegram-bot")
 
 from .llm import OllamaClient
-from .db import ensure_schema, insert_transaction
+from .db import ensure_schema, insert_transaction, fetch_recent, sum_period, delete_last, fetch_for_export
 from decimal import Decimal, InvalidOperation
 from .parser import to_csv_or_nd
 
@@ -84,7 +86,12 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
-        "/start - greet\n/help - show this message\n/health - check health\n/status - backend + queue status"
+        "/start - greet\n/help - show this message\n/health - check health\n"
+        "/status - backend + queue status\n"
+        "/last [n] - list last n entries (default 5)\n"
+        "/sum [today|week|month|all] - sum amounts (default month)\n"
+        "/undo - delete last entry\n"
+        "/export [period] - CSV export for chat"
     )
 
 
@@ -121,6 +128,70 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
     text = "\n".join(lines) if lines else "No hosts configured"
     await update.message.reply_text(text)
+
+
+async def cmd_last(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat = update.effective_chat
+    if not chat:
+        return
+    args = (update.message.text.split()[1:] if update.message and update.message.text else [])
+    try:
+        n = int(args[0]) if args else 5
+        n = max(1, min(n, 50))
+    except Exception:
+        n = 5
+    rows = await asyncio.to_thread(fetch_recent, int(chat.id), n)
+    if not rows:
+        await update.message.reply_text("No entries yet.")
+        return
+    lines = []
+    for _id, ts_str, amount, desc in rows:
+        lines.append(f"{ts_str} | {amount:+.2f} | {desc}")
+    await update.message.reply_text("\n".join(lines))
+
+
+async def cmd_sum(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat = update.effective_chat
+    if not chat:
+        return
+    args = (update.message.text.split()[1:] if update.message and update.message.text else [])
+    period = (args[0] if args else "month").lower()
+    total = await asyncio.to_thread(sum_period, int(chat.id), period)
+    await update.message.reply_text(f"Total ({period}): {total:+.2f}")
+
+
+async def cmd_undo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat = update.effective_chat
+    if not chat:
+        return
+    row = await asyncio.to_thread(delete_last, int(chat.id))
+    if not row:
+        await update.message.reply_text("Nothing to undo.")
+        return
+    _id, ts_str, amount, desc = row
+    await update.message.reply_text(f"Removed: {ts_str} | {amount:+.2f} | {desc}")
+
+
+async def cmd_export(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat = update.effective_chat
+    if not chat:
+        return
+    args = (update.message.text.split()[1:] if update.message and update.message.text else [])
+    period = args[0].lower() if args else None
+    # Build CSV in memory via thread
+    def build_csv() -> bytes:
+        output = io.StringIO()
+        writer = csv.writer(output)
+        writer.writerow(["timestamp","chatid","amount","description"])
+        for ts_str, chatid, amount, desc in fetch_for_export(int(chat.id), period):
+            writer.writerow([ts_str, chatid, f"{amount:+.2f}", desc])
+        return output.getvalue().encode("utf-8")
+
+    data = await asyncio.to_thread(build_csv)
+    bio = io.BytesIO(data)
+    fname = f"transactions_{chat.id}.csv"
+    bio.name = fname
+    await context.bot.send_document(chat_id=chat.id, document=bio, filename=fname, caption="Export CSV")
 
 
 async def echo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -206,6 +277,10 @@ def main() -> None:
             ("help", "Show help"),
             ("health", "Health check"),
             ("status", "Show backend + queue status"),
+            ("last", "List recent entries"),
+            ("sum", "Sum by period (today/week/month/all)"),
+            ("undo", "Delete last entry"),
+            ("export", "Export CSV for this chat"),
         ]
 
         try:
@@ -304,6 +379,10 @@ def main() -> None:
     app.add_handler(CommandHandler("help", cmd_help))
     app.add_handler(CommandHandler("health", cmd_health))
     app.add_handler(CommandHandler("status", cmd_status))
+    app.add_handler(CommandHandler("last", cmd_last))
+    app.add_handler(CommandHandler("sum", cmd_sum))
+    app.add_handler(CommandHandler("undo", cmd_undo))
+    app.add_handler(CommandHandler("export", cmd_export))
 
     # Fallback echo
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, echo))

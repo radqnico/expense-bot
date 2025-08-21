@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 from decimal import Decimal
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Iterable, List, Tuple
 
 import time
 import psycopg
@@ -88,3 +88,94 @@ def insert_transaction(chatid: int, amount: Decimal, description: str) -> None:
                 (chatid, amount, description),
             )
         conn.commit()
+
+
+def fetch_recent(chatid: int, limit: int = 5) -> List[Tuple[int, str, Decimal, str]]:
+    params = get_conn_params()
+    with psycopg.connect(**params) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id, to_char(ts at time zone 'UTC', 'YYYY-MM-DD HH24:MI:SS') as ts_str,
+                       amount, description
+                FROM transactions
+                WHERE chatid = %s
+                ORDER BY ts DESC
+                LIMIT %s
+                """,
+                (chatid, limit),
+            )
+            rows = cur.fetchall()
+    return rows
+
+
+def sum_period(chatid: int, period: str = "month") -> Optional[Decimal]:
+    period = (period or "month").strip().lower()
+    where = "chatid = %s"
+    if period == "today":
+        where += " AND ts >= date_trunc('day', now())"
+    elif period == "week":
+        where += " AND ts >= date_trunc('week', now())"
+    elif period == "month":
+        where += " AND ts >= date_trunc('month', now())"
+    elif period == "all":
+        pass
+    else:
+        # default to month
+        where += " AND ts >= date_trunc('month', now())"
+    params = get_conn_params()
+    with psycopg.connect(**params) as conn:
+        with conn.cursor() as cur:
+            cur.execute(f"SELECT COALESCE(SUM(amount),0) FROM transactions WHERE {where}", (chatid,))
+            val = cur.fetchone()[0]
+    return val
+
+
+def delete_last(chatid: int) -> Optional[Tuple[int, str, Decimal, str]]:
+    params = get_conn_params()
+    with psycopg.connect(**params) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                DELETE FROM transactions
+                WHERE id IN (
+                    SELECT id FROM transactions WHERE chatid = %s ORDER BY ts DESC LIMIT 1
+                )
+                RETURNING id, to_char(ts at time zone 'UTC', 'YYYY-MM-DD HH24:MI:SS') as ts_str, amount, description
+                """,
+                (chatid,),
+            )
+            row = cur.fetchone()
+        conn.commit()
+    return row
+
+
+def fetch_for_export(chatid: int, period: Optional[str] = None) -> Iterable[Tuple[str, int, Decimal, str]]:
+    where = "chatid = %s"
+    if period:
+        p = period.strip().lower()
+        if p == "today":
+            where += " AND ts >= date_trunc('day', now())"
+        elif p == "week":
+            where += " AND ts >= date_trunc('week', now())"
+        elif p == "month":
+            where += " AND ts >= date_trunc('month', now())"
+        elif p == "all":
+            pass
+        else:
+            where += " AND ts >= date_trunc('month', now())"
+    params = get_conn_params()
+    with psycopg.connect(**params) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                SELECT to_char(ts at time zone 'UTC', 'YYYY-MM-DD HH24:MI:SS') as ts_str,
+                       chatid, amount, description
+                FROM transactions
+                WHERE {where}
+                ORDER BY ts ASC
+                """,
+                (chatid,),
+            )
+            for row in cur:
+                yield row

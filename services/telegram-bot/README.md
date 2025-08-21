@@ -32,6 +32,14 @@ Environment
 - OLLAMA_PULL_ON_START: Pull the model on startup (true/false).
 - DB_HOST/DB_PORT/DB_NAME/DB_USER/DB_PASSWORD: Postgres connection for persistence.
 
+Commands
+- /help: Show available commands.
+- /status: Backend health + queue info.
+- /last [n]: Show last n entries (default 5).
+- /sum [today|week|month|all]: Sum amounts for period (default month).
+- /undo: Delete last entry.
+- /export [period]: Download CSV for this chat and optional period.
+
 Notes
 - Uses long polling; no public URL/webhook needed.
 - Logs to stdout/stderr.

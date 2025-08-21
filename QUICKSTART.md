@@ -43,6 +43,7 @@ docker exec -it ollama ollama list
 - Configure one or more Ollama backends with `OLLAMA_HOSTS` (comma-separated).
   Examples: `http://ollama:11434` (Compose) or `host1:11434,host2:11434`.
   The bot pings all on each message and round-robins across available ones.
+- Commands: /last, /sum, /undo, /export — use /help for details.
 - To run the bot image from a registry, set `TELEGRAM_BOT_IMAGE` in `.env` to your published tag.
 - If you change envs, restart: `docker compose up -d`.
 - For security, keep `.env` out of version control.
