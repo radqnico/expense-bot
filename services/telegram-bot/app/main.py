@@ -211,12 +211,27 @@ def _llm_select_indices(client: OllamaClient, topic: str, items: Sequence[str]) 
     # Limit per batch to keep prompt compact
     lines = [f"{i+1}) {s}" for i, s in enumerate(items)]
     prompt = (
-        "Seleziona gli elementi correlati al tema fornito.\n"
-        "Tema (topic): \"" + topic.strip() + "\"\n"
-        "Elenco (numero) descrizione:\n" + "\n".join(lines) + "\n\n"
-        "Rispondi SOLO con i numeri separati da virgola (es: 1,3,8)."
-        " Se nessuno, rispondi SOLO: NONE\n"
-        "Output:\n"
+        "Dato un TEMA, seleziona SOLO gli elementi la cui descrizione è chiaramente
+e direttamente pertinente a quel tema. SII MOLTO SEVERO: meglio escludere
+che includere falsi positivi. Se hai dubbi, NON selezionare.
+
+Tema: "" . topic.strip() . ""
+
+Criteri:
+- Usa il significato, non solo la somiglianza di parole.
+- Considera sinonimi stretti del tema.
+- Escludi concetti diversi con parole simili (no omonimie).
+- Esempio (tema cibo): scegli pranzo, ristorante, pizza, alimentari, spesa, caffè;
+  NON scegliere carburante, benzina, gasolio, olio motore, farmaci, bollette, arredo.
+
+Elenco (numero) descrizione:
+" . join("
+", ) . "
+
+Rispondi SOLO con i numeri separati da virgola (es: 1,3,8).
+Se nessuno, rispondi SOLO: NONE
+Output:
+"
     )
     try:
         out = client.generate(prompt).strip()
