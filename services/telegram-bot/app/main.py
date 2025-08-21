@@ -51,6 +51,7 @@ from .db import (
 from decimal import Decimal, InvalidOperation
 from .parser import to_csv_or_nd
 from .importer import read_any_excel_or_csv
+from .quick import cmd_expense, cmd_income
 
 INFERENCE_QUEUES_KEY = "inference_queues"  # dict[host]->Queue
 INFERENCE_PROCESSING_KEY = "inference_processing"  # dict[host]->bool
@@ -1518,6 +1519,9 @@ def main() -> None:
     app.add_handler(CommandHandler("sum", cmd_sum))
     app.add_handler(CommandHandler("undo", cmd_undo))
     app.add_handler(CommandHandler("export", cmd_export))
+    # Quick insert commands that bypass LLM
+    app.add_handler(CommandHandler("expense", cmd_expense))
+    app.add_handler(CommandHandler("income", cmd_income))
     app.add_handler(CommandHandler("import", cmd_import))
     app.add_handler(CommandHandler("report", cmd_report))
     app.add_handler(CommandHandler("report", cmd_report))

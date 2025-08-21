@@ -32,6 +32,7 @@ from .main import (
 )
 
 from .parser import to_csv_or_nd
+from .quick import cmd_expense, cmd_income
 from .llm import OllamaClient
 from .db import (
     ensure_schema,
@@ -139,58 +140,7 @@ def _parse_amount_token(tok: str) -> Decimal:
     return Decimal(s)
 
 
-async def cmd_expense(update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    chat = update.effective_chat
-    if not chat or not (update.message and update.message.text):
-        return
-    parts = update.message.text.split(maxsplit=2)
-    if len(parts) < 3:
-        await update.message.reply_text("Usage: /expense AMOUNT DESCRIPTION")
-        return
-    try:
-        amt = _parse_amount_token(parts[1])
-    except Exception:
-        await update.message.reply_text("Invalid amount. Example: /expense 12.50 caffè")
-        return
-    # Force negative for expense
-    amount = -abs(amt)
-    desc = parts[2].strip()
-    try:
-        await asyncio.to_thread(insert_transaction, int(chat.id), amount, desc)
-    except Exception as e:
-        await update.message.reply_text(f"Insert failed: {e}")
-        return
-    await update.message.reply_text(
-        f"✅ 💸 Spesa registrata\nImporto: {amount:+.2f}\nDescrizione: {desc}",
-        reply_to_message_id=update.message.message_id,
-    )
-
-
-async def cmd_income(update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    chat = update.effective_chat
-    if not chat or not (update.message and update.message.text):
-        return
-    parts = update.message.text.split(maxsplit=2)
-    if len(parts) < 3:
-        await update.message.reply_text("Usage: /income AMOUNT DESCRIPTION")
-        return
-    try:
-        amt = _parse_amount_token(parts[1])
-    except Exception:
-        await update.message.reply_text("Invalid amount. Example: /income 120 stipendio")
-        return
-    # Force positive for income
-    amount = abs(amt)
-    desc = parts[2].strip()
-    try:
-        await asyncio.to_thread(insert_transaction, int(chat.id), amount, desc)
-    except Exception as e:
-        await update.message.reply_text(f"Insert failed: {e}")
-        return
-    await update.message.reply_text(
-        f"✅ 💰 Entrata registrata\nImporto: {amount:+.2f}\nDescrizione: {desc}",
-        reply_to_message_id=update.message.message_id,
-    )
+# Quick insert handlers are imported from .quick
 
 
 async def register_workers(app: Application) -> None:
