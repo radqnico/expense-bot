@@ -4,33 +4,11 @@ from .llm import OllamaClient
 
 
 PROMPT_TEMPLATE = """
-You convert a single user message about expenses or income into either:
-
-1) A single CSV line: amount,description
-2) Or the exact string: ND
-
+Return exactly one line: either "amount,description" (CSV) or "ND".
 Rules:
-- amount: a positive decimal number (e.g., 12.50, 1,3, 2000). If the input uses a comma, convert it to a dot. Ignore currency symbols.
-- description: a short phrase describing the item or income, without the amount or currency symbols.
-- If there is no clear single amount, output ND.
-- If the message meaning is unclear or unrelated to expenses/income, output ND.
-- Expenses are negative, income positive.
-- Output EXACTLY one line with either "amount,description" or "ND". No extra text.
-
-Examples:
-Input: spesa caffè 1.30
-Output: -1.30,caffè
-
-Input: entrata stipendio 2000
-Output: 2000,stipendio
-
-Input: ho speso per pranzo oggi 12,50 euro
-Output: -12.50,pranzo
-
-Input: boh non so
-Output: ND
-
-Now convert the following input:
+- amount: decimal with dot (convert commas), ignore currency/symbols; income positive, expense negative.
+- description: short text without amount/currency.
+- If no single clear amount or unrelated/unclear → ND.
 Input: {text}
 Output:
 """
