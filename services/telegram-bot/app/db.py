@@ -113,6 +113,56 @@ def bulk_insert_transactions(chatid: int, rows: List[Tuple[dt.datetime, Decimal,
     return len(rows)
 
 
+def fetch_transactions_in_range(chatid: int, start: dt.date, end: dt.date) -> List[Tuple[int, str, Decimal, str]]:
+    """Fetch transactions in [start, end] inclusive, ordered by ts."""
+    params = get_conn_params()
+    with psycopg.connect(**params) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id, to_char(ts at time zone 'UTC', 'YYYY-MM-DD HH24:MI:SS') as ts_str,
+                       amount, description
+                FROM transactions
+                WHERE chatid = %s AND ts::date BETWEEN %s AND %s
+                ORDER BY ts ASC, id ASC
+                """,
+                (chatid, start, end),
+            )
+            return cur.fetchall()
+
+
+def update_transaction(chatid: int, tx_id: int, amount: Decimal, description: str) -> bool:
+    params = get_conn_params()
+    with psycopg.connect(**params) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE transactions
+                SET amount = %s, description = %s
+                WHERE id = %s AND chatid = %s
+                """,
+                (amount, description, tx_id, chatid),
+            )
+            updated = cur.rowcount or 0
+        conn.commit()
+    return updated > 0
+
+
+def delete_transaction_by_id(chatid: int, tx_id: int) -> bool:
+    params = get_conn_params()
+    with psycopg.connect(**params) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                DELETE FROM transactions WHERE id = %s AND chatid = %s
+                """,
+                (tx_id, chatid),
+            )
+            deleted = cur.rowcount or 0
+        conn.commit()
+    return deleted > 0
+
+
 def fetch_description_candidates(chatid: int, limit: int = 50) -> List[str]:
     """Return most frequent distinct descriptions for a chat.
 

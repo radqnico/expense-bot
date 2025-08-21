@@ -11,7 +11,7 @@ import datetime as dt
 import json
 from typing import Final, List, Tuple
 
-from telegram import BotCommand, Update
+from telegram import BotCommand, Update, ReplyKeyboardMarkup, ReplyKeyboardRemove
 from telegram.error import TelegramError
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 
@@ -36,6 +36,9 @@ from .db import (
     month_summary,
     fetch_description_candidates,
     delete_period,
+    fetch_transactions_in_range,
+    update_transaction,
+    delete_transaction_by_id,
 )
 from decimal import Decimal, InvalidOperation
 from .parser import to_csv_or_nd
@@ -44,6 +47,7 @@ INFERENCE_QUEUES_KEY = "inference_queues"  # dict[host]->Queue
 INFERENCE_PROCESSING_KEY = "inference_processing"  # dict[host]->bool
 HOSTS_KEY = "ollama_hosts"  # list[str]
 HOST_RR_INDEX_KEY = "host_rr_index"
+NAV_STATE_KEY = "nav_state"  # per-chat navigation state
 
 
 @dataclass
@@ -134,7 +138,8 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "/import - send a JSON file (or reply to one)\n"
         "/report day|week|month|year|YYYY-MM - charts + PDF\n"
         "/reset day|month|all - delete entries in period\n"
-        "/month YYYY-MM - monthly summary"
+        "/month YYYY-MM - monthly summary\n"
+        "/navigation YYYY-MM-DD YYYY-MM-DD - browse/edit; /navigation to exit"
     )
 
 
@@ -386,6 +391,148 @@ async def cmd_report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     # Send PDF
     pdf_bytes.name = f"report_{period}_{chat.id}.pdf"
     await context.bot.send_document(chat_id=chat.id, document=pdf_bytes, filename=pdf_bytes.name, caption=f"Report {period}")
+
+
+def _nav_keyboard() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        [["Prev", "Next"], ["Edit", "Delete"], ["Exit"]], resize_keyboard=True
+    )
+
+
+async def cmd_navigation(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat = update.effective_chat
+    if not chat:
+        return
+    parts = update.message.text.split()
+    # Exit nav mode if no params
+    if len(parts) == 1:
+        context.chat_data.pop(NAV_STATE_KEY, None)
+        await update.message.reply_text("Navigation ended.", reply_markup=ReplyKeyboardRemove())
+        return
+    if len(parts) != 3:
+        await update.message.reply_text("Usage: /navigation YYYY-MM-DD YYYY-MM-DD")
+        return
+    try:
+        start = dt.date.fromisoformat(parts[1])
+        end = dt.date.fromisoformat(parts[2])
+    except Exception:
+        await update.message.reply_text("Invalid dates. Use YYYY-MM-DD YYYY-MM-DD")
+        return
+    if end < start:
+        await update.message.reply_text("End date must be >= start date.")
+        return
+
+    rows = await asyncio.to_thread(fetch_transactions_in_range, int(chat.id), start, end)
+    if not rows:
+        await update.message.reply_text("No transactions in the given range.")
+        return
+    # Save state
+    context.chat_data[NAV_STATE_KEY] = {"start": str(start), "end": str(end), "rows": rows, "idx": 0, "await_edit": False}
+    await _nav_show_current(update, context)
+
+
+async def _nav_show_current(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat = update.effective_chat
+    if not chat:
+        return
+    state = context.chat_data.get(NAV_STATE_KEY)
+    if not state:
+        return
+    rows = state["rows"]
+    idx = state.get("idx", 0)
+    idx = max(0, min(idx, len(rows) - 1))
+    state["idx"] = idx
+    tx_id, ts_str, amount, desc = rows[idx]
+    text = (
+        f"[{idx+1}/{len(rows)}]\n"
+        f"ID: {tx_id}\n"
+        f"Date: {ts_str}\n"
+        f"Amount: {Decimal(amount):+.2f}\n"
+        f"Description: {desc}"
+    )
+    await update.message.reply_text(text, reply_markup=_nav_keyboard())
+
+
+async def handle_navigation_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat = update.effective_chat
+    if not chat or not update.message or not update.message.text:
+        return
+    state = context.chat_data.get(NAV_STATE_KEY)
+    if not state:
+        return  # not in navigation mode
+    text = update.message.text.strip()
+
+    # If awaiting edit, expect "amount,description" or "cancel"
+    if state.get("await_edit"):
+        if text.lower() in {"cancel", "annulla"}:
+            state["await_edit"] = False
+            await update.message.reply_text("Edit cancelled.", reply_markup=_nav_keyboard())
+            return
+        if "," not in text:
+            await update.message.reply_text("Send: amount,description or 'cancel'", reply_markup=_nav_keyboard())
+            return
+        try:
+            amount_str, description = text.split(",", 1)
+            amount = Decimal(amount_str.strip())
+            description = description.strip()
+        except Exception:
+            await update.message.reply_text("Invalid format. Use amount,description", reply_markup=_nav_keyboard())
+            return
+        rows = state["rows"]
+        idx = state.get("idx", 0)
+        tx_id, ts_str, _old_amount, _old_desc = rows[idx]
+        ok = await asyncio.to_thread(update_transaction, int(chat.id), int(tx_id), amount, description)
+        if not ok:
+            await update.message.reply_text("Update failed.", reply_markup=_nav_keyboard())
+            return
+        # Update local state
+        rows[idx] = (tx_id, ts_str, amount, description)
+        state["await_edit"] = False
+        await update.message.reply_text("Updated.", reply_markup=_nav_keyboard())
+        await _nav_show_current(update, context)
+        return
+
+    # Not awaiting edit: handle commands
+    cmd = text.lower()
+    rows = state["rows"]
+    idx = state.get("idx", 0)
+    if cmd == "prev":
+        if idx > 0:
+            state["idx"] = idx - 1
+        await _nav_show_current(update, context)
+        return
+    if cmd == "next":
+        if idx < len(rows) - 1:
+            state["idx"] = idx + 1
+        await _nav_show_current(update, context)
+        return
+    if cmd == "edit":
+        state["await_edit"] = True
+        await update.message.reply_text("Send new: amount,description (or 'cancel')", reply_markup=_nav_keyboard())
+        return
+    if cmd == "delete":
+        tx_id, *_ = rows[idx]
+        ok = await asyncio.to_thread(delete_transaction_by_id, int(chat.id), int(tx_id))
+        if not ok:
+            await update.message.reply_text("Delete failed.")
+            return
+        # Remove from state
+        rows.pop(idx)
+        if not rows:
+            context.chat_data.pop(NAV_STATE_KEY, None)
+            await update.message.reply_text("No more transactions. Navigation ended.", reply_markup=ReplyKeyboardRemove())
+            return
+        if idx >= len(rows):
+            state["idx"] = len(rows) - 1
+        await update.message.reply_text("Deleted.")
+        await _nav_show_current(update, context)
+        return
+    if cmd == "exit":
+        context.chat_data.pop(NAV_STATE_KEY, None)
+        await update.message.reply_text("Navigation ended.", reply_markup=ReplyKeyboardRemove())
+        return
+    # Otherwise, ignore and show help
+    await update.message.reply_text("Use keyboard: Prev, Next, Edit, Delete, Exit", reply_markup=_nav_keyboard())
 
 
 async def cmd_import(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -715,10 +862,13 @@ def main() -> None:
     app.add_handler(CommandHandler("export", cmd_export))
     app.add_handler(CommandHandler("import", cmd_import))
     app.add_handler(CommandHandler("report", cmd_report))
+    app.add_handler(CommandHandler("navigation", cmd_navigation))
     app.add_handler(CommandHandler("reset", cmd_reset))
     app.add_handler(CommandHandler("month", cmd_month))
 
     # Fallback echo
+    # Navigation input handler before echo, so it catches keyboard inputs
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_navigation_input))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, echo))
 
     logger.info("Starting polling...")
