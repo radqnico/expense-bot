@@ -52,3 +52,5 @@ Notes
 - Logs to stdout/stderr.
 - Ensure the chosen model is pulled in your Ollama: `ollama pull qwen2.5:0.5b`.
   - If `OLLAMA_PULL_ON_START=true`, the bot will try to pull automatically (with retries).
+- If no Ollama backend is reachable when a normal message arrives, the bot replies:
+  "No model backend available. Use /expense or /income to insert transactions."

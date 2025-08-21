@@ -106,7 +106,7 @@ async def echo(update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not alive_hosts:
         try:
             await update.message.reply_text(
-                "⚠️ Nessuna istanza Ollama disponibile al momento. Riprova più tardi."
+                "⚠️ No model backend available. Use /expense or /income to insert transactions."
             )
         except Exception:
             pass
