@@ -9,7 +9,7 @@ Task: Parse a single human message about money and output exactly one line: eith
 Rules:
 - amount: use a decimal with dot; convert commas to dot; strip currency symbols (€, eur, euro) and signs; thousands separators allowed.
 - polarity: expenses negative (e.g., spesa, pagato, costo, acquisto), incomes positive (e.g., entrata, incasso, stipendio, rimborso, pagamento ricevuto). If unclear, do not guess.
-- description: short text describing the item; remove amounts, currency, dates, and counts.
+- description: transform in title case, short text describing the item; remove amounts, currency, dates, and counts.
 - multiple numbers: if there isn’t one clear amount, output ND.
 - unrelated/unclear: output ND.
 - Output must be exactly one line with no extra text or formatting.
@@ -18,19 +18,19 @@ If a list of existing descriptions is provided, prefer using one of them if the 
 
 Examples:
 I: spesa 1,2 pranzo
-O: -1.2,pranzo
+O: -1.2,Pranzo
 I: entrata 2000 stipendio
-O: 2000,stipendio
+O: 2000,Stipendio
 I: spesa maschera di merda 2.30
-O: -2.3,maschera di merda
+O: -2.3,Maschera Di Merda
 I: ho speso 12,50 € per pranzo
-O: -12.5,pranzo
+O: -12.5,Pranzo
 I: rimborso 15 biglietto
-O: 15,biglietto
+O: 15,Biglietto
 I: pagato bolletta luce 87,90 eur
-O: -87.9,bolletta luce
+O: -87.9,Bolletta Luce
 I: incasso +120 consulenza
-O: 120,consulenza
+O: 120,Consulenza
 I: boh non so
 O: ND
 I: spesa 3 caffè 1.20

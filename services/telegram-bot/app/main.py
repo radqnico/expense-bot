@@ -9,6 +9,7 @@ import csv
 import io
 import datetime as dt
 import json
+import re
 from typing import Final, List, Tuple
 
 from telegram import BotCommand, Update, ReplyKeyboardMarkup, ReplyKeyboardRemove
