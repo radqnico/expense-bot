@@ -7,6 +7,7 @@ from dataclasses import dataclass
 import requests
 import csv
 import io
+import datetime as dt
 from typing import Final, List, Tuple
 
 from telegram import BotCommand, Update
