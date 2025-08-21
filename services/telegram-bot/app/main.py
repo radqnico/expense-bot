@@ -10,6 +10,7 @@ import io
 import datetime as dt
 import json
 import re
+import threading
 from typing import Final, List, Tuple, Sequence, Set
 
 from telegram import BotCommand, Update, ReplyKeyboardMarkup, ReplyKeyboardRemove
@@ -50,6 +51,7 @@ INFERENCE_PROCESSING_KEY = "inference_processing"  # dict[host]->bool
 HOSTS_KEY = "ollama_hosts"  # list[str]
 HOST_RR_INDEX_KEY = "host_rr_index"
 NAV_STATE_KEY = "nav_state"  # per-chat navigation state
+OLLAMA_LOCK_KEY = "ollama_lock"  # global lock to serialize Ollama calls
 
 
 @dataclass
@@ -199,6 +201,18 @@ def _choose_ollama_client(app: Application) -> OllamaClient:
     except Exception:
         pass
     return OllamaClient(host=hosts[0] if hosts else None)
+
+
+class _LockedOllama:
+    def __init__(self, inner: OllamaClient, lock: "threading.Lock"):
+        self._inner = inner
+        self._lock = lock
+        self.model = inner.model
+        self.host = inner.host
+
+    def generate(self, prompt: str) -> str:
+        with self._lock:
+            return self._inner.generate(prompt)
 
 
 def _llm_select_indices(client: OllamaClient, topic: str, items: Sequence[str]) -> Set[int]:
@@ -522,7 +536,7 @@ async def cmd_smartreport(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 pass
             return
 
-        client = _choose_ollama_client(app)
+        lock = app.bot_data.get(OLLAMA_LOCK_KEY); if (!defined ) {  = threading.Lock();  =  } client = _LockedOllama(_choose_ollama_client(app), lock)
         keep_flags: list[bool] = []
         CHUNK = 60
         for i in range(0, len(rows), CHUNK):
@@ -1141,7 +1155,11 @@ def main() -> None:
     # Create a single worker to process messages sequentially through Ollama
     async def worker(application: Application, host: str) -> None:
         q: asyncio.Queue = application.bot_data[INFERENCE_QUEUES_KEY][host]
-        client = OllamaClient(host=host)
+        lock = application.bot_data.get("OLLAMA_LOCK_KEY")
+        if lock is None:
+            lock = __import__("threading").Lock()
+            application.bot_data["OLLAMA_LOCK_KEY"] = lock
+        client = _LockedOllama(OllamaClient(host=host), lock)
         while True:
             job: InferenceJob = await q.get()
             processing: dict = application.bot_data[INFERENCE_PROCESSING_KEY]
