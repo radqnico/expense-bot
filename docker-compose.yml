@@ -35,7 +35,20 @@ services:
       - backend
     restart: unless-stopped
 
+  telegram-bot:
+    image: ${TELEGRAM_BOT_IMAGE:-bot-spese-telegram:dev}
+    container_name: telegram-bot
+    environment:
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      - BOT_NAME=${BOT_NAME:-RADQ Expenses Tracker}
+      - BOT_SHORT_DESCRIPTION=${BOT_SHORT_DESCRIPTION:-Track expenses easily with RADQ.}
+      - BOT_DESCRIPTION=${BOT_DESCRIPTION:-A simple expenses tracker bot. Use /help to see commands.}
+    depends_on:
+      - postgres
+    networks:
+      - backend
+    restart: unless-stopped
+
 networks:
   backend:
     driver: bridge
-
