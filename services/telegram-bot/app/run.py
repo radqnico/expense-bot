@@ -49,6 +49,7 @@ HOSTS_KEY = "ollama_hosts"
 HOST_RR_INDEX_KEY = "host_rr_index"
 OLLAMA_LOCK_KEY = "ollama_lock"
 NAV_STATE_KEY = "nav_state"
+MODEL_READY_KEY = "ollama_model_ready"
 
 
 def _normalize_host(h: str) -> str:
@@ -192,6 +193,57 @@ async def register_workers(app: Application) -> None:
     # Start one worker per host
     for h in hosts:
         app.create_task(worker(h))
+
+    # Background task: ensure the selected model is available on all hosts
+    async def ensure_models_task() -> None:
+        # One immediate pass, then periodic checks
+        ready: dict[str, bool] = app.bot_data.get(MODEL_READY_KEY) or {}
+        app.bot_data[MODEL_READY_KEY] = ready
+
+        async def _ping(h: str) -> bool:
+            try:
+                r = await asyncio.to_thread(requests.get, f"{h.rstrip('/')}/api/version",)
+                return bool(getattr(r, "ok", False))
+            except Exception:
+                return False
+
+        async def _ensure_on(h: str) -> None:
+            client = OllamaClient(host=h)
+            try:
+                # Perform pull in thread to avoid blocking the loop
+                await asyncio.to_thread(client.pull_model)
+                ready[h] = True
+                try:
+                    logger.info("Ollama model ensured on %s: %s", h, client.model)
+                except Exception:
+                    pass
+            except Exception as e:
+                ready[h] = False
+                try:
+                    logger.warning("Ollama model ensure failed on %s: %s", h, e)
+                except Exception:
+                    pass
+
+        # Initial pass
+        for h in hosts:
+            if await _ping(h):
+                if not ready.get(h, False):
+                    await _ensure_on(h)
+
+        # Periodic re-check for hosts coming online later
+        while True:
+            await asyncio.sleep(60)
+            # Hosts list may have been updated; re-read
+            _hosts = app.bot_data.get(HOSTS_KEY) or parse_ollama_hosts()
+            for h in _hosts:
+                if await _ping(h):
+                    if not ready.get(h, False):
+                        await _ensure_on(h)
+                else:
+                    # If host is offline, mark as not ready so we re-pull when it returns
+                    ready[h] = False
+
+    app.create_task(ensure_models_task())
 
 
 def main() -> None:
