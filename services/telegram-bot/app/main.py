@@ -1,5 +1,6 @@
 import logging
 import os
+import os
 import sys
 from typing import Final, List, Tuple
 
@@ -68,6 +69,17 @@ def get_token() -> str:
 
 def main() -> None:
     token = get_token()
+
+    # Optionally pull model on start
+    pull_on_start = os.getenv("OLLAMA_PULL_ON_START", "true").lower() not in {"0", "false", "no"}
+    if pull_on_start:
+        client = OllamaClient()
+        try:
+            logger.info("Ensuring model is available: %s", client.model)
+            client.pull_model()
+            logger.info("Model ready: %s", client.model)
+        except Exception as e:
+            logger.warning("Could not pull model on start: %s", e)
 
     async def post_init(application: Application) -> None:
         commands: List[Tuple[str, str]] = [

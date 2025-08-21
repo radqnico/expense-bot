@@ -15,6 +15,7 @@ Run
     -e BOT_DESCRIPTION="A simple expenses tracker bot. Use /help to see commands." \
     -e OLLAMA_HOST=http://host.docker.internal:11434 \
     -e OLLAMA_MODEL=qwen2.5:0.5b \
+    -e OLLAMA_PULL_ON_START=true \
     --name bot-spese-telegram \
     bot-spese-telegram:dev
 
@@ -25,8 +26,10 @@ Environment
 - BOT_DESCRIPTION: Full description (shown in profile).
 - OLLAMA_HOST: Ollama API base URL (default in compose: http://ollama:11434).
 - OLLAMA_MODEL: Small model name, e.g. `qwen2.5:0.5b`.
+- OLLAMA_PULL_ON_START: Pull the model on startup (true/false).
 
 Notes
 - Uses long polling; no public URL/webhook needed.
 - Logs to stdout/stderr.
 - Ensure the chosen model is pulled in your Ollama: `ollama pull qwen2.5:0.5b`.
+  - If `OLLAMA_PULL_ON_START=true`, the bot will try to pull automatically (with retries).
