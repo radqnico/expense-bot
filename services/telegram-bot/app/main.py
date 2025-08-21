@@ -114,7 +114,7 @@ def get_commands() -> List[Tuple[str, str]]:
         ("sum", "Sum by period (today/week/month/all)"),
         ("undo", "Delete last entry"),
         ("export", "Export CSV: /export YYYY-MM|day|week|month|year"),
-        ("import", "Import JSON: send file or reply"),
+        ("import", "Import JSON/Excel/CSV: send file or reply"),
         ("report", "Charts + PDF: /report day|week|month|year|YYYY-MM"),
         ("reset", "Reset entries: /reset day|month|all"),
         ("month", "Monthly summary: /month YYYY-MM"),
@@ -138,7 +138,7 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "/sum [today|week|month|all] - sum amounts (default month)\n"
         "/undo - delete last entry\n"
         "/export [YYYY-MM|day|week|month|year] - CSV export\n"
-        "/import - send a JSON file (or reply to one)\n"
+        "/import - send a JSON or Excel/CSV file (or reply to one)\n"
         "/report day|week|month|year|YYYY-MM - charts + PDF\n"
         "/reset day|month|all - delete entries in period\n"
         "/month YYYY-MM - monthly summary\n"
