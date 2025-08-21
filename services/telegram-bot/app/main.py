@@ -23,7 +23,15 @@ logging.basicConfig(
 logger = logging.getLogger("bot-spese.telegram-bot")
 
 from .llm import OllamaClient
-from .db import ensure_schema, insert_transaction, fetch_recent, sum_period, delete_last, fetch_for_export
+from .db import (
+    ensure_schema,
+    insert_transaction,
+    fetch_recent,
+    sum_period,
+    delete_last,
+    fetch_for_export,
+    month_summary,
+)
 from decimal import Decimal, InvalidOperation
 from .parser import to_csv_or_nd
 
@@ -91,7 +99,8 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "/last [n] - list last n entries (default 5)\n"
         "/sum [today|week|month|all] - sum amounts (default month)\n"
         "/undo - delete last entry\n"
-        "/export [period] - CSV export for chat"
+        "/export [period] - CSV export for chat\n"
+        "/month YYYY-MM - monthly summary"
     )
 
 
@@ -194,6 +203,41 @@ async def cmd_export(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     await context.bot.send_document(chat_id=chat.id, document=bio, filename=fname, caption="Export CSV")
 
 
+async def cmd_month(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat = update.effective_chat
+    if not chat or not (update.message and update.message.text):
+        return
+    parts = update.message.text.split()
+    ym = parts[1] if len(parts) > 1 else None
+    import datetime as _dt
+    if not ym:
+        now = _dt.datetime.utcnow()
+        year, month = now.year, now.month
+    else:
+        try:
+            year_s, month_s = ym.split("-")
+            year, month = int(year_s), int(month_s)
+            if not (1 <= month <= 12):
+                raise ValueError
+        except Exception:
+            await update.message.reply_text("Usage: /month YYYY-MM")
+            return
+
+    summary = await asyncio.to_thread(month_summary, int(chat.id), year, month)
+    lines = [
+        f"Summary {year:04d}-{month:02d}",
+        f"Entries: {summary['count']}",
+        f"Income: +{summary['income']:.2f}",
+        f"Expenses: {summary['expenses']:.2f}",
+        f"Net: {summary['net']:+.2f}",
+    ]
+    if summary.get("days"):
+        lines.append("By day:")
+        for d, s in summary["days"]:
+            lines.append(f"- {d}: {s:+.2f}")
+    await update.message.reply_text("\n".join(lines))
+
+
 async def echo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not (update.message and update.message.text):
         return
@@ -281,6 +325,7 @@ def main() -> None:
             ("sum", "Sum by period (today/week/month/all)"),
             ("undo", "Delete last entry"),
             ("export", "Export CSV for this chat"),
+            ("month", "Monthly summary: /month YYYY-MM"),
         ]
 
         try:
@@ -383,6 +428,7 @@ def main() -> None:
     app.add_handler(CommandHandler("sum", cmd_sum))
     app.add_handler(CommandHandler("undo", cmd_undo))
     app.add_handler(CommandHandler("export", cmd_export))
+    app.add_handler(CommandHandler("month", cmd_month))
 
     # Fallback echo
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, echo))

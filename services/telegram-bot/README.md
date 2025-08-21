@@ -39,6 +39,7 @@ Commands
 - /sum [today|week|month|all]: Sum amounts for period (default month).
 - /undo: Delete last entry.
 - /export [period]: Download CSV for this chat and optional period.
+- /month YYYY-MM: Monthly summary (income, expenses, net, by day).
 
 Notes
 - Uses long polling; no public URL/webhook needed.

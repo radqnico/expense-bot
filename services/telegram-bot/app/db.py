@@ -179,3 +179,52 @@ def fetch_for_export(chatid: int, period: Optional[str] = None) -> Iterable[Tupl
             )
             for row in cur:
                 yield row
+
+
+def month_summary(chatid: int, year: int, month: int) -> Dict[str, Any]:
+    """Return totals and per-day sums for the given month.
+
+    Keys:
+    - income: Decimal (>=0)
+    - expenses: Decimal (<=0)
+    - net: Decimal
+    - count: int
+    - days: List[Tuple[str, Decimal]] with date as YYYY-MM-DD and daily sum
+    """
+    params = get_conn_params()
+    with psycopg.connect(**params) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                WITH range AS (
+                    SELECT make_timestamp(%s, %s, 1, 0, 0, 0) at time zone 'UTC' AS start_ts,
+                           (make_timestamp(%s, %s, 1, 0, 0, 0) + interval '1 month') at time zone 'UTC' AS end_ts
+                )
+                SELECT
+                    COALESCE(SUM(CASE WHEN amount > 0 THEN amount ELSE 0 END), 0) AS income,
+                    COALESCE(SUM(CASE WHEN amount < 0 THEN amount ELSE 0 END), 0) AS expenses,
+                    COALESCE(SUM(amount), 0) AS net,
+                    COUNT(*) AS cnt
+                FROM transactions t, range r
+                WHERE t.chatid = %s AND t.ts >= r.start_ts AND t.ts < r.end_ts
+                """,
+                (year, month, year, month, chatid),
+            )
+            income, expenses, net, cnt = cur.fetchone()
+
+            cur.execute(
+                """
+                WITH range AS (
+                    SELECT make_timestamp(%s, %s, 1, 0, 0, 0) at time zone 'UTC' AS start_ts,
+                           (make_timestamp(%s, %s, 1, 0, 0, 0) + interval '1 month') at time zone 'UTC' AS end_ts
+                )
+                SELECT to_char(date_trunc('day', ts), 'YYYY-MM-DD') as d, COALESCE(SUM(amount),0) AS sum
+                FROM transactions t, range r
+                WHERE t.chatid = %s AND t.ts >= r.start_ts AND t.ts < r.end_ts
+                GROUP BY 1
+                ORDER BY 1
+                """,
+                (year, month, year, month, chatid),
+            )
+            days = cur.fetchall()
+    return {"income": income, "expenses": expenses, "net": net, "count": cnt, "days": days}
