@@ -51,6 +51,5 @@ services:
       - OLLAMA_PULL_ON_START=${OLLAMA_PULL_ON_START:-true}
     depends_on:
       - postgres
-      - ollama
     restart: unless-stopped
 
