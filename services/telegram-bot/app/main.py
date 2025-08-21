@@ -1,9 +1,10 @@
 import logging
 import os
 import sys
-from typing import Final
+from typing import Final, List, Tuple
 
-from telegram import Update
+from telegram import BotCommand, Update
+from telegram.error import TelegramError
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 
 
@@ -16,11 +17,23 @@ logging.basicConfig(
 logger = logging.getLogger("bot-spese.telegram-bot")
 
 
+BOT_NAME: Final = os.getenv("BOT_NAME", "RADQ Expenses Tracker").strip()
+BOT_SHORT_DESCRIPTION: Final = (
+    os.getenv("BOT_SHORT_DESCRIPTION", "Track expenses easily with RADQ.").strip()
+)
+BOT_DESCRIPTION: Final = (
+    os.getenv(
+        "BOT_DESCRIPTION",
+        "A simple expenses tracker bot. Use /help to see commands.",
+    ).strip()
+)
+
+
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
     logger.info("/start by %s", user.username if user else "unknown")
     await update.message.reply_text(
-        "Hello! I'm alive. Use /help to see commands."
+        f"👋 Welcome to {BOT_NAME}!\nUse /help to see commands."
     )
 
 
@@ -50,7 +63,47 @@ def get_token() -> str:
 def main() -> None:
     token = get_token()
 
-    app = Application.builder().token(token).build()
+    async def post_init(application: Application) -> None:
+        commands: List[Tuple[str, str]] = [
+            ("start", "Start the bot"),
+            ("help", "Show help"),
+            ("health", "Health check"),
+        ]
+
+        try:
+            await application.bot.set_my_name(name=BOT_NAME)
+            logger.info("Set bot name: %s", BOT_NAME)
+        except TelegramError as e:
+            logger.warning("Could not set bot name: %s", e)
+
+        try:
+            await application.bot.set_my_short_description(
+                short_description=BOT_SHORT_DESCRIPTION
+            )
+            logger.info("Set short description")
+        except TelegramError as e:
+            logger.warning("Could not set short description: %s", e)
+
+        try:
+            await application.bot.set_my_description(description=BOT_DESCRIPTION)
+            logger.info("Set description")
+        except TelegramError as e:
+            logger.warning("Could not set description: %s", e)
+
+        try:
+            await application.bot.set_my_commands(
+                [BotCommand(c, d) for c, d in commands]
+            )
+            logger.info("Set commands: %s", ", ".join(c for c, _ in commands))
+        except TelegramError as e:
+            logger.warning("Could not set commands: %s", e)
+
+    app = (
+        Application.builder()
+        .token(token)
+        .post_init(post_init)
+        .build()
+    )
 
     # Commands
     app.add_handler(CommandHandler("start", cmd_start))
@@ -66,4 +119,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
