@@ -210,7 +210,7 @@ def fetch_recent(chatid: int, limit: int = 5) -> List[Tuple[int, str, Decimal, s
 def sum_period(chatid: int, period: str = "month") -> Optional[Decimal]:
     period = (period or "month").strip().lower()
     where = "chatid = %s"
-    if period == "today":
+    if period in ("today", "day"):
         where += " AND ts >= date_trunc('day', now())"
     elif period == "week":
         where += " AND ts >= date_trunc('week', now())"
@@ -278,7 +278,7 @@ def fetch_for_export(chatid: int, period: Optional[str] = None) -> Iterable[Tupl
     where = "chatid = %s"
     if period:
         p = period.strip().lower()
-        if p == "today":
+        if p in ("today", "day"):
             where += " AND ts >= date_trunc('day', now())"
         elif p == "week":
             where += " AND ts >= date_trunc('week', now())"
