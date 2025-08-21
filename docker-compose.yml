@@ -40,11 +40,17 @@ services:
     container_name: telegram-bot
     environment:
       - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      # DB connection for the bot (reuse postgres env)
+      - DB_HOST=${POSTGRES_HOST:-postgres}
+      - DB_PORT=${POSTGRES_PORT:-5432}
+      - DB_NAME=${POSTGRES_DB:-appdb}
+      - DB_USER=${POSTGRES_USER:-app}
+      - DB_PASSWORD=${POSTGRES_PASSWORD:-app}
       - BOT_NAME=${BOT_NAME:-RADQ Expenses Tracker}
       - BOT_SHORT_DESCRIPTION=${BOT_SHORT_DESCRIPTION:-Track expenses easily with RADQ.}
       - BOT_DESCRIPTION=${BOT_DESCRIPTION:-A simple expenses tracker bot. Use /help to see commands.}
       - OLLAMA_HOST=${OLLAMA_HOST:-http://ollama:11434}
-      - OLLAMA_MODEL=${OLLAMA_MODEL:-qwen2.5:0.5b}
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-hf.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF:Q4_K_M}
       - OLLAMA_PULL_ON_START=${OLLAMA_PULL_ON_START:-true}
     depends_on:
       - postgres

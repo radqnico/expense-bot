@@ -18,6 +18,8 @@ logging.basicConfig(
 logger = logging.getLogger("bot-spese.telegram-bot")
 
 from .llm import OllamaClient
+from .db import ensure_schema, insert_transaction
+from decimal import Decimal, InvalidOperation
 from .parser import to_csv_or_nd
 
 
@@ -57,6 +59,22 @@ async def echo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         client = OllamaClient()
         result = to_csv_or_nd(text, client)
         await update.message.reply_text(result)
+
+        # Persist if valid CSV
+        try:
+            if "," in result and result.upper() != "ND":
+                amount_str, description = result.split(",", 1)
+                amount_str = amount_str.strip()
+                description = description.strip()
+                # Normalize decimal
+                amount = Decimal(amount_str)
+                chatid = update.effective_chat.id if update.effective_chat else None
+                if chatid is not None:
+                    # Insert synchronously; operations are small
+                    insert_transaction(int(chatid), amount, description)
+        except (InvalidOperation, Exception):
+            # Do not raise; keep bot responsive
+            pass
 
 
 def get_token() -> str:
@@ -115,6 +133,13 @@ def main() -> None:
             logger.info("Set commands: %s", ", ".join(c for c, _ in commands))
         except TelegramError as e:
             logger.warning("Could not set commands: %s", e)
+
+    # Ensure DB schema before starting
+    try:
+        ensure_schema()
+        logger.info("Database schema ensured")
+    except Exception as e:
+        logger.warning("Could not ensure DB schema: %s", e)
 
     app = (
         Application.builder()
