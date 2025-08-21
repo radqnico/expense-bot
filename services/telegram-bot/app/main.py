@@ -108,7 +108,7 @@ def get_commands() -> List[Tuple[str, str]]:
         ("undo", "Delete last entry"),
         ("export", "Export CSV: /export YYYY-MM|day|week|month|year"),
         ("import", "Import JSON: send file or reply"),
-        ("report", "Charts + PDF: /report day|week|month|year"),
+        ("report", "Charts + PDF: /report day|week|month|year|YYYY-MM"),
         ("reset", "Reset entries: /reset day|month|all"),
         ("month", "Monthly summary: /month YYYY-MM"),
     ]
@@ -132,7 +132,7 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "/undo - delete last entry\n"
         "/export [YYYY-MM|day|week|month|year] - CSV export\n"
         "/import - send a JSON file (or reply to one)\n"
-        "/report day|week|month|year - charts + PDF\n"
+        "/report day|week|month|year|YYYY-MM - charts + PDF\n"
         "/reset day|month|all - delete entries in period\n"
         "/month YYYY-MM - monthly summary"
     )
@@ -248,10 +248,18 @@ async def cmd_report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     if not chat or not (update.message and update.message.text):
         return
     parts = update.message.text.split()
-    if len(parts) < 2 or parts[1].lower() not in {"day", "week", "month", "year"}:
-        await update.message.reply_text("Usage: /report day|week|month|year")
+    if len(parts) < 2:
+        await update.message.reply_text("Usage: /report day|week|month|year|YYYY-MM")
         return
-    period = parts[1].lower()
+    arg = parts[1].strip()
+    if re.fullmatch(r"\d{4}-\d{2}", arg):
+        period = arg
+    else:
+        arg_l = arg.lower()
+        if arg_l not in {"day", "week", "month", "year"}:
+            await update.message.reply_text("Usage: /report day|week|month|year|YYYY-MM")
+            return
+        period = arg_l
 
     # Fetch data for the period using export iterator
     rows = list(await asyncio.to_thread(lambda: list(fetch_for_export(int(chat.id), period))))
