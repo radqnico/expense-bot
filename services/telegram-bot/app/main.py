@@ -571,11 +571,13 @@ async def cmd_import(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         return
     # Try sources in order: document in this message, replied document, inline JSON text after command
     content_bytes: bytes | None = None
+    filename: str | None = None
     # 1) This message has a document
     if update.message and update.message.document:
         try:
             file = await context.bot.get_file(update.message.document.file_id)
             content_bytes = await file.download_as_bytearray()
+            filename = update.message.document.file_name or None
         except Exception:
             content_bytes = None
     # 2) Replied message has a document
@@ -583,6 +585,7 @@ async def cmd_import(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         try:
             file = await context.bot.get_file(update.message.reply_to_message.document.file_id)
             content_bytes = await file.download_as_bytearray()
+            filename = update.message.reply_to_message.document.file_name or None
         except Exception:
             content_bytes = None
     # 3) Inline JSON in message text after command
@@ -595,34 +598,56 @@ async def cmd_import(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         await update.message.reply_text("Send a JSON file or reply to one with /import")
         return
 
-    try:
-        data = json.loads(content_bytes.decode("utf-8", "ignore"))
-    except Exception:
-        await update.message.reply_text("Invalid JSON.")
-        return
-    if not isinstance(data, list):
-        await update.message.reply_text("JSON must be a list of objects.")
-        return
-
     rows = []
     inserted = 0
     skipped = 0
-    for obj in data:
+    if filename and any(filename.lower().endswith(ext) for ext in (".xlsx", ".xls", ".csv")):
+        # Excel/CSV path
         try:
-            date_str = obj.get("data") or obj.get("date")
-            amt_raw = obj.get("importo") if "importo" in obj else obj.get("amount")
-            op = (obj.get("operazione") or obj.get("descrizione") or obj.get("description") or "").strip()
-            cat = (obj.get("categoria") or obj.get("category") or "").strip()
-            if not date_str or amt_raw is None:
+            records = await asyncio.to_thread(read_any_excel_or_csv, bytes(content_bytes), filename)
+        except Exception as e:
+            await update.message.reply_text(f"Failed to parse file: {e}")
+            return
+        for obj in records:
+            try:
+                date_str = obj.get("data")
+                amt_raw = obj.get("importo")
+                cat = (obj.get("categoria") or "").strip()
+                op = (obj.get("operazione") or "").strip()
+                if not date_str or amt_raw is None:
+                    skipped += 1
+                    continue
+                ts = dt.datetime.strptime(str(date_str), "%Y-%m-%d").replace(tzinfo=dt.timezone.utc)
+                amount = Decimal(str(amt_raw))
+                desc = cat if cat else (op or "")
+                rows.append((ts, amount, desc))
+            except Exception:
                 skipped += 1
-                continue
-            ts = dt.datetime.strptime(str(date_str), "%Y-%m-%d").replace(tzinfo=dt.timezone.utc)
-            amount = Decimal(str(amt_raw))
-            # Keep only the category as description (fallback to operation if category missing)
-            desc = cat if cat else (op or "")
-            rows.append((ts, amount, desc))
+    else:
+        # JSON path
+        try:
+            data = json.loads(content_bytes.decode("utf-8", "ignore"))
         except Exception:
-            skipped += 1
+            await update.message.reply_text("Invalid JSON.")
+            return
+        if not isinstance(data, list):
+            await update.message.reply_text("JSON must be a list of objects.")
+            return
+        for obj in data:
+            try:
+                date_str = obj.get("data") or obj.get("date")
+                amt_raw = obj.get("importo") if "importo" in obj else obj.get("amount")
+                op = (obj.get("operazione") or obj.get("descrizione") or obj.get("description") or "").strip()
+                cat = (obj.get("categoria") or obj.get("category") or "").strip()
+                if not date_str or amt_raw is None:
+                    skipped += 1
+                    continue
+                ts = dt.datetime.strptime(str(date_str), "%Y-%m-%d").replace(tzinfo=dt.timezone.utc)
+                amount = Decimal(str(amt_raw))
+                desc = cat if cat else (op or "")
+                rows.append((ts, amount, desc))
+            except Exception:
+                skipped += 1
     # Limit batch size for safety
     MAX_BATCH = 5000
     rows = rows[:MAX_BATCH]
