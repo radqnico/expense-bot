@@ -13,4 +13,3 @@ venv/
 
 # Ignore generated volumes content
 volumes/**
-!volumes/**/.gitkeep
