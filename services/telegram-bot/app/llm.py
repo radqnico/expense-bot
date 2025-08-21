@@ -24,6 +24,7 @@ class OllamaClient:
             "options": {
                 "temperature": 0,
             },
+            "keep_alive": "24h"
         }
         resp = requests.post(
             url,

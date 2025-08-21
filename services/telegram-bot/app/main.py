@@ -10,7 +10,7 @@ import io
 import datetime as dt
 import json
 import re
-from typing import Final, List, Tuple
+from typing import Final, List, Tuple, Sequence, Set
 
 from telegram import BotCommand, Update, ReplyKeyboardMarkup, ReplyKeyboardRemove
 from telegram.error import TelegramError
@@ -116,6 +116,7 @@ def get_commands() -> List[Tuple[str, str]]:
         ("export", "Export CSV: /export YYYY-MM|day|week|month|year"),
         ("import", "Import JSON/Excel/CSV: send file or reply"),
         ("report", "Charts + PDF: /report day|week|month|year|YYYY-MM"),
+        ("smartreport", "LLM filter: /smartreport PERIOD QUERY"),
         ("reset", "Reset entries: /reset day|month|all"),
         ("month", "Monthly summary: /month YYYY-MM"),
         ("navigation", "Browse/edit: /navigation YYYY-MM-DD YYYY-MM-DD"),
@@ -143,6 +144,7 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "/report day|week|month|year|YYYY-MM - charts + PDF\n"
         "/reset day|month|all - delete entries in period\n"
         "/month YYYY-MM - monthly summary\n"
+        "/smartreport PERIOD QUERY - LLM filtered report by topic\n"
         "/navigation YYYY-MM-DD YYYY-MM-DD - browse/edit; /navigation to exit"
     )
 
@@ -180,6 +182,61 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
     text = "\n".join(lines) if lines else "No hosts configured"
     await update.message.reply_text(text)
+
+
+def _choose_ollama_client(app: Application) -> OllamaClient:
+    hosts: list[str] = app.bot_data.get(HOSTS_KEY) or parse_ollama_hosts()
+    app.bot_data[HOSTS_KEY] = hosts
+    # Optimistically pick first; try to prefer alive host via round-robin if available
+    try:
+        alive_list = [ping_host(h) for h in hosts]
+        alive_hosts = [h for h, alive in zip(hosts, alive_list) if alive]
+        if alive_hosts:
+            rr = app.bot_data.get(HOST_RR_INDEX_KEY, 0)
+            host = alive_hosts[rr % len(alive_hosts)]
+            app.bot_data[HOST_RR_INDEX_KEY] = rr + 1
+            return OllamaClient(host=host)
+    except Exception:
+        pass
+    return OllamaClient(host=hosts[0] if hosts else None)
+
+
+def _llm_select_indices(client: OllamaClient, topic: str, items: Sequence[str]) -> Set[int]:
+    """Ask the LLM to select item indices (1-based) matching the topic.
+
+    Returns a set of selected indices. On failure returns empty set.
+    """
+    if not items:
+        return set()
+    # Limit per batch to keep prompt compact
+    lines = [f"{i+1}) {s}" for i, s in enumerate(items)]
+    prompt = (
+        "Seleziona gli elementi correlati al tema fornito.\n"
+        "Tema (topic): \"" + topic.strip() + "\"\n"
+        "Elenco (numero) descrizione:\n" + "\n".join(lines) + "\n\n"
+        "Rispondi SOLO con i numeri separati da virgola (es: 1,3,8)."
+        " Se nessuno, rispondi SOLO: NONE\n"
+        "Output:\n"
+    )
+    try:
+        out = client.generate(prompt).strip()
+    except Exception:
+        return set()
+    if not out:
+        return set()
+    out = out.strip().strip("` ").strip()
+    if out.upper().startswith("NONE"):
+        return set()
+    # Extract numbers
+    nums = set()
+    for tok in out.replace("\n", ",").split(","):
+        tok = tok.strip()
+        if not tok:
+            continue
+        if tok.isdigit():
+            nums.add(int(tok))
+    # Keep those in range
+    return {n for n in nums if 1 <= n <= len(items)}
 
 
 async def cmd_last(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -422,6 +479,176 @@ async def cmd_report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     # Send PDF
     pdf_bytes.name = f"report_{period}_{chat.id}.pdf"
     await context.bot.send_document(chat_id=chat.id, document=pdf_bytes, filename=pdf_bytes.name, caption=f"Report {period}")
+
+
+async def cmd_smartreport(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """LLM-filtered report: /smartreport PERIOD QUERY"""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from matplotlib.backends.backend_pdf import PdfPages
+
+    chat = update.effective_chat
+    if not chat or not (update.message and update.message.text):
+        return
+    parts = update.message.text.split(maxsplit=2)
+    if len(parts) < 3:
+        await update.message.reply_text("Usage: /smartreport YYYY-MM|day|week|month|year QUERY")
+        return
+    period_arg = parts[1].strip()
+    query = parts[2].strip()
+
+    # Fetch data for the period
+    rows = list(await asyncio.to_thread(lambda: list(fetch_for_export(int(chat.id), period_arg))))
+    if not rows:
+        await update.message.reply_text("No data for the selected period.")
+        return
+
+    # Build client and filter in manageable chunks
+    client = _choose_ollama_client(context.application)
+    keep_flags: list[bool] = []
+    CHUNK = 60
+    for i in range(0, len(rows), CHUNK):
+        chunk = rows[i : i + CHUNK]
+        descs = [d for (_ts, _cid, _amt, d) in chunk]
+        # Use thread to avoid blocking loop
+        indices = await asyncio.to_thread(_llm_select_indices, client, query, descs)
+        sel = [(j + 1) in indices for j in range(len(chunk))]
+        keep_flags.extend(sel)
+
+    filtered = [r for r, keep in zip(rows, keep_flags) if keep]
+    if not filtered:
+        await update.message.reply_text("Nessuna transazione pertinente trovata per il tema richiesto.")
+        return
+
+    # Parse to (ts, amount, desc)
+    parsed = []
+    for ts_str, _cid, amount, desc in filtered:
+        ts = dt.datetime.strptime(ts_str, "%Y-%m-%d %H:%M:%S")
+        parsed.append((ts, float(amount), desc))
+    parsed.sort(key=lambda x: x[0])
+
+    # Aggregate per day (reuse logic from cmd_report)
+    from collections import defaultdict
+    daily_net = defaultdict(float)
+    daily_income = defaultdict(float)
+    daily_exp = defaultdict(float)
+    by_desc_exp = defaultdict(float)
+    for ts, amt, desc in parsed:
+        d = ts.date()
+        daily_net[d] += amt
+        if amt >= 0:
+            daily_income[d] += amt
+        else:
+            daily_exp[d] += amt
+            by_desc_exp[desc] += abs(amt)
+
+    days = sorted(daily_net.keys())
+    x = days
+    income_y = [daily_income[d] for d in x]
+    exp_y = [daily_exp[d] for d in x]
+    net_cum = []
+    s = 0.0
+    for d in x:
+        s += daily_net[d]
+        net_cum.append(s)
+
+    # Charts
+    fig1, ax1 = plt.subplots(figsize=(7, 4))
+    ax1.plot(x, net_cum, marker="o")
+    ax1.set_title(f"Smart cumulative net ({period_arg}) — {query}")
+    ax1.set_xlabel("Date")
+    ax1.set_ylabel("Amount")
+    ax1.grid(True, alpha=0.3)
+    for label in ax1.get_xticklabels():
+        label.set_rotation(90)
+        label.set_horizontalalignment("center")
+    fig1.tight_layout()
+
+    fig2, ax2 = plt.subplots(figsize=(7, 4))
+    ax2.bar(x, income_y, color="#2e7d32", label="Income")
+    ax2.bar(x, exp_y, color="#c62828", label="Expenses")
+    ax2.set_title(f"Smart daily income/expenses ({period_arg}) — {query}")
+    ax2.set_xlabel("Date")
+    ax2.set_ylabel("Amount")
+    ax2.legend()
+    ax2.grid(True, axis="y", alpha=0.3)
+    for label in ax2.get_xticklabels():
+        label.set_rotation(90)
+        label.set_horizontalalignment("center")
+    fig2.tight_layout()
+
+    top_items = sorted(by_desc_exp.items(), key=lambda kv: kv[1], reverse=True)
+    top5 = top_items[:5]
+    other_sum = sum(v for _, v in top_items[5:])
+    labels = [k for k, _ in top5] + ((["Others"] if other_sum > 0 else []))
+    values = [v for _, v in top5] + (([other_sum] if other_sum > 0 else []))
+    fig3 = None
+    if values:
+        fig3, ax3 = plt.subplots(figsize=(6, 6))
+        ax3.pie(values, labels=labels, autopct="%1.1f%%", startangle=90)
+        ax3.set_title(f"Top expense categories ({period_arg}) — {query}")
+        fig3.tight_layout()
+
+    # PDF with summary + list
+    pdf_bytes = io.BytesIO()
+    with PdfPages(pdf_bytes) as pdf:
+        pdf.savefig(fig1)
+        pdf.savefig(fig2)
+        if fig3 is not None:
+            pdf.savefig(fig3)
+        # Summary page
+        fig4, ax4 = plt.subplots(figsize=(7, 4))
+        ax4.axis("off")
+        total_income = sum(max(0.0, a) for _, a, _ in parsed)
+        total_exp = -sum(min(0.0, a) for _, a, _ in parsed)
+        net = total_income - total_exp
+        text = (
+            f"Smart Report ({period_arg}) — {query}\n\n"
+            f"Entries: {len(parsed)}\n"
+            f"Income: +{total_income:.2f}\n"
+            f"Expenses: -{total_exp:.2f}\n"
+            f"Net: {net:+.2f}\n"
+        )
+        ax4.text(0.05, 0.95, text, va="top", ha="left", fontsize=12)
+        pdf.savefig(fig4)
+        plt.close(fig4)
+        # Full list paginated
+        header = "Timestamp           Amount    Description"
+        lines = [
+            f"{ts.strftime('%Y-%m-%d %H:%M'):19}  {a:+9.2f}  {d}"
+            for ts, a, d in parsed
+        ]
+        LPP = 36
+        if lines:
+            for i in range(0, len(lines), LPP):
+                chunk = lines[i : i + LPP]
+                figp, axp = plt.subplots(figsize=(8.27, 11.69))
+                axp.axis("off")
+                page_text = "\n".join([header, "-" * len(header)] + chunk)
+                axp.text(0.03, 0.97, page_text, va="top", ha="left", family="monospace", fontsize=9)
+                pdf.savefig(figp)
+                plt.close(figp)
+    pdf_bytes.seek(0)
+
+    # Send images
+    images = []
+    for fig in [fig1, fig2, fig3]:
+        if fig is None:
+            continue
+        buf = io.BytesIO()
+        fig.savefig(buf, format="png", bbox_inches="tight")
+        plt.close(fig)
+        buf.seek(0)
+        images.append(buf)
+    for i, img in enumerate(images, 1):
+        try:
+            await context.bot.send_photo(chat_id=chat.id, photo=img, caption=f"Smart report {period_arg} ({i}/{len(images)}) — {query}")
+        except Exception:
+            pass
+    # Send PDF
+    pdf_bytes.name = f"smartreport_{period_arg}_{chat.id}.pdf"
+    await context.bot.send_document(chat_id=chat.id, document=pdf_bytes, filename=pdf_bytes.name, caption=f"Smart report {period_arg} — {query}")
 
 
 def _nav_keyboard() -> ReplyKeyboardMarkup:
@@ -962,6 +1189,7 @@ def main() -> None:
     app.add_handler(CommandHandler("export", cmd_export))
     app.add_handler(CommandHandler("import", cmd_import))
     app.add_handler(CommandHandler("report", cmd_report))
+    app.add_handler(CommandHandler("smartreport", cmd_smartreport))
     app.add_handler(CommandHandler("navigation", cmd_navigation))
     app.add_handler(CommandHandler("reset", cmd_reset))
     app.add_handler(CommandHandler("month", cmd_month))
