@@ -59,6 +59,7 @@ HOSTS_KEY = "ollama_hosts"  # list[str]
 HOST_RR_INDEX_KEY = "host_rr_index"
 NAV_STATE_KEY = "nav_state"  # per-chat navigation state
 OLLAMA_LOCK_KEY = "ollama_lock"  # global lock to serialize Ollama calls
+MODEL_READY_KEY = "ollama_model_ready"  # per-host model availability
 
 
 @dataclass
@@ -174,6 +175,7 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     hosts: list[str] = app.bot_data.get(HOSTS_KEY) or parse_ollama_hosts()
     queues: dict = app.bot_data.get(INFERENCE_QUEUES_KEY) or {}
     processing: dict = app.bot_data.get(INFERENCE_PROCESSING_KEY) or {}
+    ready: dict = app.bot_data.get(MODEL_READY_KEY) or {}
 
     alive_list = await asyncio.to_thread(lambda: [ping_host(h) for h in hosts])
     lines = []
@@ -193,8 +195,9 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             except Exception:
                 pass
         status = "up" if alive else "down"
+        model = "ready" if ready.get(h, False) else "not-ready"
         extra = f", you at #{pos}" if pos is not None else ""
-        lines.append(f"{h} — {status}, queue {qsize}{extra}")
+        lines.append(f"{h} — {status}, model {model}, queue {qsize}{extra}")
 
     text = "\n".join(lines) if lines else "No hosts configured"
     await update.message.reply_text(text)
