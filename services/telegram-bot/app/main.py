@@ -53,6 +53,7 @@ NAV_STATE_KEY = "nav_state"  # per-chat navigation state
 @dataclass
 class InferenceJob:
     chat_id: int
+    message_id: int
     text: str
 
 
@@ -720,7 +721,7 @@ async def echo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     except Exception:
         pass
 
-    await q.put(InferenceJob(chat_id=chat.id, text=text))
+    await q.put(InferenceJob(chat_id=chat.id, message_id=update.message.message_id, text=text))
 
 
 def get_token() -> str:
@@ -855,6 +856,7 @@ def main() -> None:
                 candidates = await asyncio.to_thread(fetch_description_candidates, int(job.chat_id), 50)
                 result = await asyncio.to_thread(to_csv_or_nd, job.text, client, candidates)
                 # Persist if CSV
+                reply_text = None
                 try:
                     if "," in result and result.upper() != "ND":
                         amount_str, description = result.split(",", 1)
@@ -862,11 +864,30 @@ def main() -> None:
                         await asyncio.to_thread(
                             insert_transaction, int(job.chat_id), amount, description.strip()
                         )
+                        kind = "Entrata" if amount >= 0 else "Spesa"
+                        emoji = "💰" if amount >= 0 else "💸"
+                        reply_text = (
+                            f"✅ {emoji} {kind} registrata\n"
+                            f"Importo: {amount:+.2f}\n"
+                            f"Descrizione: {description.strip()}"
+                        )
+                    else:
+                        reply_text = (
+                            "⚠️ Non determinato. "
+                            "Assicurati di includere un importo e una descrizione."
+                        )
                 except (InvalidOperation, Exception):
-                    pass
+                    reply_text = (
+                        "⚠️ Errore nell\'inserimento. "
+                        "Controlla il formato e riprova."
+                    )
                 # Reply to user
                 try:
-                    await application.bot.send_message(chat_id=job.chat_id, text=result)
+                    await application.bot.send_message(
+                        chat_id=job.chat_id,
+                        text=reply_text or result,
+                        reply_to_message_id=getattr(job, "message_id", None) or None,
+                    )
                 except Exception:
                     pass
             finally:
