@@ -39,6 +39,7 @@ Commands
 - /sum [today|week|month|all]: Sum amounts for period (default month).
 - /undo: Delete last entry.
 - /export [period|YYYY-MM]: Download CSV for this chat. Period can be today/week/month/all or a specific month in YYYY-MM.
+- /report day|week|month|year: Sends charts (cumulative net, daily income/expenses, top expenses) and a PDF summary for the period.
 - /reset day|month|all: Delete entries for the given period.
 - /month YYYY-MM: Monthly summary (income, expenses, net, by day).
 

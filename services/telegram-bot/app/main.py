@@ -103,7 +103,8 @@ def get_commands() -> List[Tuple[str, str]]:
         ("last", "List recent entries"),
         ("sum", "Sum by period (today/week/month/all)"),
         ("undo", "Delete last entry"),
-        ("export", "Export CSV for this chat"),
+        ("export", "Export CSV: /export YYYY-MM|day|week|month|year"),
+        ("report", "Charts + PDF: /report day|week|month|year"),
         ("reset", "Reset entries: /reset day|month|all"),
         ("month", "Monthly summary: /month YYYY-MM"),
     ]
@@ -125,7 +126,8 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "/last [n] - list last n entries (default 5)\n"
         "/sum [today|week|month|all] - sum amounts (default month)\n"
         "/undo - delete last entry\n"
-        "/export [period|YYYY-MM] - CSV export for chat\n"
+        "/export [YYYY-MM|day|week|month|year] - CSV export\n"
+        "/report day|week|month|year - charts + PDF\n"
         "/reset day|month|all - delete entries in period\n"
         "/month YYYY-MM - monthly summary"
     )
@@ -228,6 +230,143 @@ async def cmd_export(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     fname = f"transactions_{chat.id}.csv"
     bio.name = fname
     await context.bot.send_document(chat_id=chat.id, document=bio, filename=fname, caption="Export CSV")
+
+
+async def cmd_report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    # Generate plots and a PDF report for day|week|month|year
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from matplotlib.backends.backend_pdf import PdfPages
+
+    chat = update.effective_chat
+    if not chat or not (update.message and update.message.text):
+        return
+    parts = update.message.text.split()
+    if len(parts) < 2 or parts[1].lower() not in {"day", "week", "month", "year"}:
+        await update.message.reply_text("Usage: /report day|week|month|year")
+        return
+    period = parts[1].lower()
+
+    # Fetch data for the period using export iterator
+    rows = list(await asyncio.to_thread(lambda: list(fetch_for_export(int(chat.id), period))))
+    if not rows:
+        await update.message.reply_text("No data for the selected period.")
+        return
+
+    # Parse rows into structures
+    # rows: (ts_str, chatid, amount, desc)
+    parsed = []
+    for ts_str, _cid, amount, desc in rows:
+        ts = dt.datetime.strptime(ts_str, "%Y-%m-%d %H:%M:%S")
+        parsed.append((ts, float(amount), desc))
+    parsed.sort(key=lambda x: x[0])
+
+    # Build daily aggregation
+    from collections import defaultdict
+    daily_net = defaultdict(float)
+    daily_income = defaultdict(float)
+    daily_exp = defaultdict(float)
+    by_desc_exp = defaultdict(float)
+    for ts, amt, desc in parsed:
+        d = ts.date()
+        daily_net[d] += amt
+        if amt >= 0:
+            daily_income[d] += amt
+        else:
+            daily_exp[d] += amt
+            by_desc_exp[desc] += abs(amt)
+
+    # Sort days
+    days = sorted(daily_net.keys())
+    x = days
+    income_y = [daily_income[d] for d in x]
+    exp_y = [daily_exp[d] for d in x]
+    net_cum = []
+    s = 0.0
+    for d in x:
+        s += daily_net[d]
+        net_cum.append(s)
+
+    # 1) Cumulative net line plot
+    fig1, ax1 = plt.subplots(figsize=(7, 4))
+    ax1.plot(x, net_cum, marker="o")
+    ax1.set_title(f"Cumulative net ({period})")
+    ax1.set_xlabel("Date")
+    ax1.set_ylabel("Amount")
+    ax1.grid(True, alpha=0.3)
+    fig1.tight_layout()
+
+    # 2) Daily bars: income (green) and expenses (red)
+    fig2, ax2 = plt.subplots(figsize=(7, 4))
+    ax2.bar(x, income_y, color="#2e7d32", label="Income")
+    ax2.bar(x, exp_y, color="#c62828", label="Expenses")
+    ax2.set_title(f"Daily income/expenses ({period})")
+    ax2.set_xlabel("Date")
+    ax2.set_ylabel("Amount")
+    ax2.legend()
+    ax2.grid(True, axis="y", alpha=0.3)
+    fig2.tight_layout()
+
+    # 3) Top expense categories pie
+    top_items = sorted(by_desc_exp.items(), key=lambda kv: kv[1], reverse=True)
+    top5 = top_items[:5]
+    other_sum = sum(v for _, v in top_items[5:])
+    labels = [k for k, _ in top5] + ((["Others"] if other_sum > 0 else []))
+    values = [v for _, v in top5] + (([other_sum] if other_sum > 0 else []))
+    if values:
+        fig3, ax3 = plt.subplots(figsize=(6, 6))
+        ax3.pie(values, labels=labels, autopct="%1.1f%%", startangle=90)
+        ax3.set_title(f"Top expense categories ({period})")
+        fig3.tight_layout()
+    else:
+        fig3 = None
+
+    # Export PDF
+    pdf_bytes = io.BytesIO()
+    with PdfPages(pdf_bytes) as pdf:
+        pdf.savefig(fig1)
+        pdf.savefig(fig2)
+        if fig3 is not None:
+            pdf.savefig(fig3)
+        # Summary page
+        fig4, ax4 = plt.subplots(figsize=(7, 4))
+        ax4.axis("off")
+        total_income = sum(max(0.0, a) for _, a, _ in parsed)
+        total_exp = -sum(min(0.0, a) for _, a, _ in parsed)
+        net = total_income - total_exp
+        text = (
+            f"Report ({period})\n\n"
+            f"Entries: {len(parsed)}\n"
+            f"Income: +{total_income:.2f}\n"
+            f"Expenses: -{total_exp:.2f}\n"
+            f"Net: {net:+.2f}\n"
+        )
+        ax4.text(0.05, 0.95, text, va="top", ha="left", fontsize=12)
+        pdf.savefig(fig4)
+    pdf_bytes.seek(0)
+
+    # Send images
+    images = []
+    for fig in [fig1, fig2, fig3]:
+        if fig is None:
+            continue
+        buf = io.BytesIO()
+        fig.savefig(buf, format="png", bbox_inches="tight")
+        plt.close(fig)
+        buf.seek(0)
+        images.append(buf)
+
+    # Send photos individually to keep captions simple
+    for i, img in enumerate(images, 1):
+        try:
+            await context.bot.send_photo(chat_id=chat.id, photo=img, caption=f"Report {period} ({i}/{len(images)})")
+        except Exception:
+            pass
+
+    # Send PDF
+    pdf_bytes.name = f"report_{period}_{chat.id}.pdf"
+    await context.bot.send_document(chat_id=chat.id, document=pdf_bytes, filename=pdf_bytes.name, caption=f"Report {period}")
 
 
 async def cmd_reset(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -482,6 +621,7 @@ def main() -> None:
     app.add_handler(CommandHandler("sum", cmd_sum))
     app.add_handler(CommandHandler("undo", cmd_undo))
     app.add_handler(CommandHandler("export", cmd_export))
+    app.add_handler(CommandHandler("report", cmd_report))
     app.add_handler(CommandHandler("reset", cmd_reset))
     app.add_handler(CommandHandler("month", cmd_month))
 

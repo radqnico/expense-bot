@@ -212,6 +212,8 @@ def fetch_for_export(chatid: int, period: Optional[str] = None) -> Iterable[Tupl
             where += " AND ts >= date_trunc('week', now())"
         elif p == "month":
             where += " AND ts >= date_trunc('month', now())"
+        elif p == "year":
+            where += " AND ts >= date_trunc('year', now())"
         elif p == "all":
             pass
         else:
