@@ -151,6 +151,13 @@ def main() -> None:
         except TelegramError as e:
             logger.warning("Could not set commands: %s", e)
 
+        # Start background worker once the loop is running
+        try:
+            application.create_task(worker(application))
+            logger.info("Started inference worker")
+        except Exception as e:
+            logger.warning("Could not start worker: %s", e)
+
     # Ensure DB schema before starting
     try:
         ensure_schema()
@@ -192,8 +199,7 @@ def main() -> None:
                 q.task_done()
                 application.bot_data[INFERENCE_PROCESSING_KEY] = False
 
-    # Start background worker
-    app.create_task(worker(app))
+    # Worker is started in post_init where event loop is running
 
     # Commands
     app.add_handler(CommandHandler("start", cmd_start))
