@@ -92,6 +92,29 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     )
 
 
+def get_commands() -> List[Tuple[str, str]]:
+    return [
+        ("start", "Start the bot"),
+        ("help", "Show help"),
+        ("health", "Health check"),
+        ("status", "Show backend + queue status"),
+        ("last", "List recent entries"),
+        ("sum", "Sum by period (today/week/month/all)"),
+        ("undo", "Delete last entry"),
+        ("export", "Export CSV for this chat"),
+        ("month", "Monthly summary: /month YYYY-MM"),
+    ]
+
+
+async def sync_commands(application: Application) -> None:
+    try:
+        cmds = [BotCommand(c, d) for c, d in get_commands()]
+        await application.bot.set_my_commands(cmds)
+        logger.info("Commands synced: %s", ", ".join(c for c, _ in get_commands()))
+    except TelegramError as e:
+        logger.warning("Could not set commands: %s", e)
+
+
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
         "/start - greet\n/help - show this message\n/health - check health\n"
@@ -327,17 +350,6 @@ def main() -> None:
                 logger.warning("Could not pull model on %s: %s", h, e)
 
     async def post_init(application: Application) -> None:
-        commands: List[Tuple[str, str]] = [
-            ("start", "Start the bot"),
-            ("help", "Show help"),
-            ("health", "Health check"),
-            ("status", "Show backend + queue status"),
-            ("last", "List recent entries"),
-            ("sum", "Sum by period (today/week/month/all)"),
-            ("undo", "Delete last entry"),
-            ("export", "Export CSV for this chat"),
-            ("month", "Monthly summary: /month YYYY-MM"),
-        ]
 
         try:
             await application.bot.set_my_name(name=BOT_NAME)
@@ -359,13 +371,7 @@ def main() -> None:
         except TelegramError as e:
             logger.warning("Could not set description: %s", e)
 
-        try:
-            await application.bot.set_my_commands(
-                [BotCommand(c, d) for c, d in commands]
-            )
-            logger.info("Set commands: %s", ", ".join(c for c, _ in commands))
-        except TelegramError as e:
-            logger.warning("Could not set commands: %s", e)
+        await sync_commands(application)
 
         # Initialize hosts and per-host queues
         hosts = parse_ollama_hosts()
@@ -382,6 +388,21 @@ def main() -> None:
             logger.info("Started %d inference workers", len(hosts))
         except Exception as e:
             logger.warning("Could not start workers: %s", e)
+
+        # Periodically refresh commands to ensure they stay updated
+        async def _commands_refresher(app: Application) -> None:
+            while True:
+                try:
+                    await asyncio.sleep(6 * 60 * 60)
+                    await sync_commands(app)
+                except Exception:
+                    # keep looping regardless of transient errors
+                    await asyncio.sleep(60)
+
+        try:
+            application.create_task(_commands_refresher(application))
+        except Exception as e:
+            logger.warning("Could not start commands refresher: %s", e)
 
     # Ensure DB schema before starting
     try:
