@@ -232,6 +232,31 @@ def fetch_for_export(chatid: int, period: Optional[str] = None) -> Iterable[Tupl
                 yield row
 
 
+def delete_period(chatid: int, period: str) -> int:
+    """Delete rows for a chat in a given period.
+
+    period: 'day' (today), 'month' (this month), or 'all'. Returns deleted count.
+    """
+    p = (period or "").strip().lower()
+    where = "chatid = %s"
+    if p in {"day", "today"}:
+        where += " AND ts >= date_trunc('day', now())"
+    elif p == "month":
+        where += " AND ts >= date_trunc('month', now())"
+    elif p == "all":
+        pass
+    else:
+        raise ValueError("invalid period")
+
+    params = get_conn_params()
+    with psycopg.connect(**params) as conn:
+        with conn.cursor() as cur:
+            cur.execute(f"DELETE FROM transactions WHERE {where}", (chatid,))
+            deleted = cur.rowcount or 0
+        conn.commit()
+    return deleted
+
+
 def month_summary(chatid: int, year: int, month: int) -> Dict[str, Any]:
     """Return totals and per-day sums for the given month.
 

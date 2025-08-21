@@ -32,6 +32,7 @@ from .db import (
     fetch_for_export,
     month_summary,
     fetch_description_candidates,
+    delete_period,
 )
 from decimal import Decimal, InvalidOperation
 from .parser import to_csv_or_nd
@@ -103,6 +104,7 @@ def get_commands() -> List[Tuple[str, str]]:
         ("sum", "Sum by period (today/week/month/all)"),
         ("undo", "Delete last entry"),
         ("export", "Export CSV for this chat"),
+        ("reset", "Reset entries: /reset day|month|all"),
         ("month", "Monthly summary: /month YYYY-MM"),
     ]
 
@@ -124,6 +126,7 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "/sum [today|week|month|all] - sum amounts (default month)\n"
         "/undo - delete last entry\n"
         "/export [period|YYYY-MM] - CSV export for chat\n"
+        "/reset day|month|all - delete entries in period\n"
         "/month YYYY-MM - monthly summary"
     )
 
@@ -225,6 +228,23 @@ async def cmd_export(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     fname = f"transactions_{chat.id}.csv"
     bio.name = fname
     await context.bot.send_document(chat_id=chat.id, document=bio, filename=fname, caption="Export CSV")
+
+
+async def cmd_reset(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat = update.effective_chat
+    if not chat or not (update.message and update.message.text):
+        return
+    parts = update.message.text.split()
+    if len(parts) < 2 or parts[1].lower() not in {"day", "month", "all"}:
+        await update.message.reply_text("Usage: /reset day|month|all")
+        return
+    period = parts[1].lower()
+    try:
+        deleted = await asyncio.to_thread(delete_period, int(chat.id), period)
+    except ValueError:
+        await update.message.reply_text("Usage: /reset day|month|all")
+        return
+    await update.message.reply_text(f"Deleted {deleted} entrie(s) for {period}.")
 
 
 async def cmd_month(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -462,6 +482,7 @@ def main() -> None:
     app.add_handler(CommandHandler("sum", cmd_sum))
     app.add_handler(CommandHandler("undo", cmd_undo))
     app.add_handler(CommandHandler("export", cmd_export))
+    app.add_handler(CommandHandler("reset", cmd_reset))
     app.add_handler(CommandHandler("month", cmd_month))
 
     # Fallback echo
