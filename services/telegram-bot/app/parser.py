@@ -46,17 +46,26 @@ def to_csv_or_nd(text: str, client: OllamaClient) -> str:
     if not out:
         return "ND"
 
-    # Post-process: keep only first line and trim
-    line = out.strip().splitlines()[0].strip()
-    # Guard against models adding code fencing or quotes
-    if line.startswith("`") and line.endswith("`"):
-        line = line.strip("`")
-    if line.startswith("\"") and line.endswith("\""):
-        line = line.strip("\"")
-    # Minimal sanity: if line contains a comma and a digit, accept, else ND
-    if "," in line and any(ch.isdigit() for ch in line):
-        return line
-    if line.upper() == "ND":
-        return "ND"
-    return "ND"
+    # Post-process robustly: models often wrap output in code fences or add extra lines.
+    lines = [ln.strip() for ln in out.strip().splitlines() if ln.strip()]
 
+    # Prefer the first plausible CSV line; ignore code fences like ``` or ```csv
+    for raw in lines:
+        if raw.startswith("```"):
+            continue
+        line = raw
+        # Strip simple surrounding quotes/backticks
+        if (line.startswith("`") and line.endswith("`")) or (
+            line.startswith("\"") and line.endswith("\"")
+        ):
+            line = line[1:-1].strip()
+        # Accept minimal sane CSV: contains a comma and at least one digit
+        if "," in line and any(ch.isdigit() for ch in line):
+            return line
+
+    # If no CSV found, accept explicit ND on any line
+    for ln in lines:
+        if ln.upper() == "ND":
+            return "ND"
+
+    return "ND"
