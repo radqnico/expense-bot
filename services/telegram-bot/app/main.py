@@ -300,6 +300,9 @@ async def cmd_report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     ax1.set_xlabel("Date")
     ax1.set_ylabel("Amount")
     ax1.grid(True, alpha=0.3)
+    for label in ax1.get_xticklabels():
+        label.set_rotation(90)
+        label.set_horizontalalignment("center")
     fig1.tight_layout()
 
     # 2) Daily bars: income (green) and expenses (red)
@@ -311,6 +314,9 @@ async def cmd_report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     ax2.set_ylabel("Amount")
     ax2.legend()
     ax2.grid(True, axis="y", alpha=0.3)
+    for label in ax2.get_xticklabels():
+        label.set_rotation(90)
+        label.set_horizontalalignment("center")
     fig2.tight_layout()
 
     # 3) Top expense categories pie
