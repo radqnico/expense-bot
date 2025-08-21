@@ -118,6 +118,7 @@ def get_commands() -> List[Tuple[str, str]]:
         ("report", "Charts + PDF: /report day|week|month|year|YYYY-MM"),
         ("reset", "Reset entries: /reset day|month|all"),
         ("month", "Monthly summary: /month YYYY-MM"),
+        ("navigation", "Browse/edit: /navigation YYYY-MM-DD YYYY-MM-DD"),
     ]
 
 
