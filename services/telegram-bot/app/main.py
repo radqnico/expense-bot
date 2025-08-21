@@ -2,6 +2,8 @@ import logging
 import os
 import os
 import sys
+import asyncio
+from dataclasses import dataclass
 from typing import Final, List, Tuple
 
 from telegram import BotCommand, Update
@@ -21,6 +23,15 @@ from .llm import OllamaClient
 from .db import ensure_schema, insert_transaction
 from decimal import Decimal, InvalidOperation
 from .parser import to_csv_or_nd
+
+INFERENCE_QUEUE_KEY = "inference_queue"
+INFERENCE_PROCESSING_KEY = "inference_processing"
+
+
+@dataclass
+class InferenceJob:
+    chat_id: int
+    text: str
 
 
 BOT_NAME: Final = os.getenv("BOT_NAME", "RADQ Expenses Tracker").strip()
@@ -54,27 +65,33 @@ async def cmd_health(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
 
 async def echo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if update.message and update.message.text:
-        text = update.message.text
-        client = OllamaClient()
-        result = to_csv_or_nd(text, client)
-        await update.message.reply_text(result)
+    if not (update.message and update.message.text):
+        return
 
-        # Persist if valid CSV
+    text = update.message.text
+    chat = update.effective_chat
+    if not chat:
+        return
+
+    # Enqueue the message for sequential processing
+    q: asyncio.Queue = context.application.bot_data.setdefault(INFERENCE_QUEUE_KEY, asyncio.Queue())
+    processing: bool = bool(context.application.bot_data.get(INFERENCE_PROCESSING_KEY, False))
+
+    # Calculate position: items in queue + (1 if currently processing) + this job
+    position = q.qsize() + (1 if processing else 0) + 1
+
+    if position > 1:
         try:
-            if "," in result and result.upper() != "ND":
-                amount_str, description = result.split(",", 1)
-                amount_str = amount_str.strip()
-                description = description.strip()
-                # Normalize decimal
-                amount = Decimal(amount_str)
-                chatid = update.effective_chat.id if update.effective_chat else None
-                if chatid is not None:
-                    # Insert synchronously; operations are small
-                    insert_transaction(int(chatid), amount, description)
-        except (InvalidOperation, Exception):
-            # Do not raise; keep bot responsive
+            await update.message.reply_text(f"⏳ Occupato. Sei in coda (#{position}). Ti avviso appena pronto.")
+        except Exception:
             pass
+    else:
+        try:
+            await update.message.reply_text("🚀 Elaboro il tuo messaggio…")
+        except Exception:
+            pass
+
+    await q.put(InferenceJob(chat_id=chat.id, text=text))
 
 
 def get_token() -> str:
@@ -147,6 +164,36 @@ def main() -> None:
         .post_init(post_init)
         .build()
     )
+
+    # Create a single worker to process messages sequentially through Ollama
+    async def worker(application: Application) -> None:
+        q: asyncio.Queue = application.bot_data.setdefault(INFERENCE_QUEUE_KEY, asyncio.Queue())
+        client = OllamaClient()
+        while True:
+            job: InferenceJob = await q.get()
+            application.bot_data[INFERENCE_PROCESSING_KEY] = True
+            try:
+                # Generate and parse
+                result = to_csv_or_nd(job.text, client)
+                # Persist if CSV
+                try:
+                    if "," in result and result.upper() != "ND":
+                        amount_str, description = result.split(",", 1)
+                        amount = Decimal(amount_str.strip())
+                        insert_transaction(int(job.chat_id), amount, description.strip())
+                except (InvalidOperation, Exception):
+                    pass
+                # Reply to user
+                try:
+                    await application.bot.send_message(chat_id=job.chat_id, text=result)
+                except Exception:
+                    pass
+            finally:
+                q.task_done()
+                application.bot_data[INFERENCE_PROCESSING_KEY] = False
+
+    # Start background worker
+    app.create_task(worker(app))
 
     # Commands
     app.add_handler(CommandHandler("start", cmd_start))
