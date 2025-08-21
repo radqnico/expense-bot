@@ -3,7 +3,7 @@ from __future__ import annotations
 from .llm import OllamaClient
 
 
-PROMPT_TEMPLATE = """
+BASE_PROMPT_TEMPLATE = """
 Task: Parse a single human message about money and output exactly one line: either "<amount>,<description>" (CSV) or "ND".
 
 Rules:
@@ -13,6 +13,8 @@ Rules:
 - multiple numbers: if there isn’t one clear amount, output ND.
 - unrelated/unclear: output ND.
 - Output must be exactly one line with no extra text or formatting.
+
+If a list of existing descriptions is provided, prefer using one of them if the new description is similar; otherwise, output a concise new description.
 
 Examples:
 I: spesa 1,2 pranzo
@@ -33,15 +35,17 @@ I: boh non so
 O: ND
 I: spesa 3 caffè 1.20
 O: ND
-
-Now convert:
-Input: {text}
-Output:
 """
 
 
-def to_csv_or_nd(text: str, client: OllamaClient) -> str:
-    prompt = PROMPT_TEMPLATE.format(text=text.strip())
+def to_csv_or_nd(text: str, client: OllamaClient, candidates: list[str] | None = None) -> str:
+    text = text.strip()
+    prompt = BASE_PROMPT_TEMPLATE
+    if candidates:
+        # Keep list compact; join with semicolons
+        joined = "; ".join(c.strip() for c in candidates[:50] if c and c.strip())
+        prompt += f"\nExisting descriptions (prefer exact reuse if similar):\n{joined}\n"
+    prompt += f"\nNow convert:\nInput: {text}\nOutput:\n"
     try:
         out = client.generate(prompt)
     except Exception:

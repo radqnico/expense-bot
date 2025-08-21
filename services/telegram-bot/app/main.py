@@ -31,6 +31,7 @@ from .db import (
     delete_last,
     fetch_for_export,
     month_summary,
+    fetch_description_candidates,
 )
 from decimal import Decimal, InvalidOperation
 from .parser import to_csv_or_nd
@@ -428,8 +429,9 @@ def main() -> None:
             processing: dict = application.bot_data[INFERENCE_PROCESSING_KEY]
             processing[host] = True
             try:
-                # Generate and parse
-                result = await asyncio.to_thread(to_csv_or_nd, job.text, client)
+                # Generate and parse; provide description candidates for this chat
+                candidates = await asyncio.to_thread(fetch_description_candidates, int(job.chat_id), 50)
+                result = await asyncio.to_thread(to_csv_or_nd, job.text, client, candidates)
                 # Persist if CSV
                 try:
                     if "," in result and result.upper() != "ND":

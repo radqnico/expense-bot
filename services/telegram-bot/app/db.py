@@ -91,6 +91,31 @@ def insert_transaction(chatid: int, amount: Decimal, description: str) -> None:
         conn.commit()
 
 
+def fetch_description_candidates(chatid: int, limit: int = 50) -> List[str]:
+    """Return most frequent distinct descriptions for a chat.
+
+    Ordered by usage count desc, then alphabetically. Limited to avoid huge prompts.
+    """
+    params = get_conn_params()
+    with psycopg.connect(**params) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT description
+                FROM (
+                    SELECT description, COUNT(*) AS cnt
+                    FROM transactions
+                    WHERE chatid = %s
+                    GROUP BY description
+                ) t
+                ORDER BY cnt DESC, description ASC
+                LIMIT %s
+                """,
+                (chatid, limit),
+            )
+            return [r[0] for r in cur.fetchall()]
+
+
 def fetch_recent(chatid: int, limit: int = 5) -> List[Tuple[int, str, Decimal, str]]:
     params = get_conn_params()
     with psycopg.connect(**params) as conn:
