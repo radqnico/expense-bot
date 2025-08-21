@@ -428,9 +428,8 @@ async def cmd_import(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
                 continue
             ts = dt.datetime.strptime(str(date_str), "%Y-%m-%d").replace(tzinfo=dt.timezone.utc)
             amount = Decimal(str(amt_raw))
-            desc = op if op else (cat or "")
-            if cat and cat.lower() not in desc.lower():
-                desc = f"{desc} [{cat}]" if desc else cat
+            # Keep only the category as description (fallback to operation if category missing)
+            desc = cat if cat else (op or "")
             rows.append((ts, amount, desc))
         except Exception:
             skipped += 1
