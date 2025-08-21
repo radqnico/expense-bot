@@ -4,6 +4,7 @@ import os
 import sys
 import asyncio
 from dataclasses import dataclass
+import requests
 from typing import Final, List, Tuple
 
 from telegram import BotCommand, Update
@@ -24,14 +25,41 @@ from .db import ensure_schema, insert_transaction
 from decimal import Decimal, InvalidOperation
 from .parser import to_csv_or_nd
 
-INFERENCE_QUEUE_KEY = "inference_queue"
-INFERENCE_PROCESSING_KEY = "inference_processing"
+INFERENCE_QUEUES_KEY = "inference_queues"  # dict[host]->Queue
+INFERENCE_PROCESSING_KEY = "inference_processing"  # dict[host]->bool
+HOSTS_KEY = "ollama_hosts"  # list[str]
+HOST_RR_INDEX_KEY = "host_rr_index"
 
 
 @dataclass
 class InferenceJob:
     chat_id: int
     text: str
+
+
+def _normalize_host(h: str) -> str:
+    h = h.strip().rstrip("/")
+    if not h:
+        return h
+    if "://" not in h:
+        h = f"http://{h}"
+    return h
+
+
+def parse_ollama_hosts() -> list[str]:
+    raw = os.getenv("OLLAMA_HOSTS") or os.getenv("OLLAMA_HOST") or "localhost:11434"
+    parts = [p.strip() for p in raw.split(",") if p.strip()]
+    hosts = [_normalize_host(p) for p in parts]
+    return hosts or ["http://localhost:11434"]
+
+
+def ping_host(base_url: str, timeout: float = 2.0) -> bool:
+    url = f"{base_url}/api/version"
+    try:
+        r = requests.get(url, timeout=timeout)
+        return r.ok
+    except Exception:
+        return False
 
 
 BOT_NAME: Final = os.getenv("BOT_NAME", "RADQ Expenses Tracker").strip()
@@ -73,23 +101,46 @@ async def echo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not chat:
         return
 
-    # Enqueue the message for sequential processing
-    q: asyncio.Queue = context.application.bot_data.setdefault(INFERENCE_QUEUE_KEY, asyncio.Queue())
-    processing: bool = bool(context.application.bot_data.get(INFERENCE_PROCESSING_KEY, False))
+    app = context.application
+    # Resolve hosts and queues
+    hosts: list[str] = app.bot_data.get(HOSTS_KEY) or []
+    queues: dict = app.bot_data.get(INFERENCE_QUEUES_KEY) or {}
+    processing: dict = app.bot_data.get(INFERENCE_PROCESSING_KEY) or {}
 
-    # Calculate position: items in queue + (1 if currently processing) + this job
-    position = q.qsize() + (1 if processing else 0) + 1
+    # Ping all instances in a background thread
+    alive_list = await asyncio.to_thread(lambda: [ping_host(h) for h in hosts])
+    alive_hosts = [h for h, alive in zip(hosts, alive_list) if alive]
 
-    if position > 1:
-        try:
-            await update.message.reply_text(f"⏳ Occupato. Sei in coda (#{position}). Ti avviso appena pronto.")
-        except Exception:
-            pass
+    # Choose target host: round-robin among alive, preserving order; fallback to first defined
+    if alive_hosts:
+        rr = app.bot_data.get(HOST_RR_INDEX_KEY, 0)
+        host = alive_hosts[rr % len(alive_hosts)]
+        app.bot_data[HOST_RR_INDEX_KEY] = rr + 1
     else:
-        try:
+        host = hosts[0] if hosts else "http://localhost:11434"
+
+    q: asyncio.Queue = queues.get(host)
+    if q is None:
+        # Safety: initialize if missing
+        q = asyncio.Queue()
+        queues[host] = q
+        app.bot_data[INFERENCE_QUEUES_KEY] = queues
+
+    # Position in selected host queue
+    is_processing = bool(processing.get(host, False))
+    position = q.qsize() + (1 if is_processing else 0) + 1
+
+    # Notify user
+    try:
+        if position > 1:
+            postfix = " (nessuna istanza disponibile, attendo ripristino)" if not alive_hosts else ""
+            await update.message.reply_text(
+                f"⏳ Occupato. Sei in coda (#{position}). Ti avviso appena pronto.{postfix}"
+            )
+        else:
             await update.message.reply_text("🚀 Elaboro il tuo messaggio…")
-        except Exception:
-            pass
+    except Exception:
+        pass
 
     await q.put(InferenceJob(chat_id=chat.id, text=text))
 
@@ -151,12 +202,21 @@ def main() -> None:
         except TelegramError as e:
             logger.warning("Could not set commands: %s", e)
 
-        # Start background worker once the loop is running
+        # Initialize hosts and per-host queues
+        hosts = parse_ollama_hosts()
+        application.bot_data[HOSTS_KEY] = hosts
+        application.bot_data[INFERENCE_QUEUES_KEY] = {}
+        application.bot_data[INFERENCE_PROCESSING_KEY] = {}
+        for h in hosts:
+            application.bot_data[INFERENCE_QUEUES_KEY][h] = asyncio.Queue()
+
+        # Start one worker per host
         try:
-            application.create_task(worker(application))
-            logger.info("Started inference worker")
+            for h in hosts:
+                application.create_task(worker(application, h))
+            logger.info("Started %d inference workers", len(hosts))
         except Exception as e:
-            logger.warning("Could not start worker: %s", e)
+            logger.warning("Could not start workers: %s", e)
 
     # Ensure DB schema before starting
     try:
@@ -174,12 +234,13 @@ def main() -> None:
     )
 
     # Create a single worker to process messages sequentially through Ollama
-    async def worker(application: Application) -> None:
-        q: asyncio.Queue = application.bot_data.setdefault(INFERENCE_QUEUE_KEY, asyncio.Queue())
-        client = OllamaClient()
+    async def worker(application: Application, host: str) -> None:
+        q: asyncio.Queue = application.bot_data[INFERENCE_QUEUES_KEY][host]
+        client = OllamaClient(host=host)
         while True:
             job: InferenceJob = await q.get()
-            application.bot_data[INFERENCE_PROCESSING_KEY] = True
+            processing: dict = application.bot_data[INFERENCE_PROCESSING_KEY]
+            processing[host] = True
             try:
                 # Generate and parse
                 result = await asyncio.to_thread(to_csv_or_nd, job.text, client)
@@ -200,7 +261,7 @@ def main() -> None:
                     pass
             finally:
                 q.task_done()
-                application.bot_data[INFERENCE_PROCESSING_KEY] = False
+                processing[host] = False
 
     # Worker is started in post_init where event loop is running
 
