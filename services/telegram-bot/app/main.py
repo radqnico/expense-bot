@@ -201,7 +201,6 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
     text = "\n".join(lines) if lines else "No hosts configured"
     await update.message.reply_text(text)
-    await update.message.reply_text(text)
 
 # Recurrent operations UX-friendly commands
 _ALLOWED_REC_KIND = {"daily", "weekly", "monthly", "yearly"}
@@ -1526,7 +1525,6 @@ def main() -> None:
     app.add_handler(CommandHandler("expense", cmd_expense))
     app.add_handler(CommandHandler("income", cmd_income))
     app.add_handler(CommandHandler("import", cmd_import))
-    app.add_handler(CommandHandler("report", cmd_report))
     app.add_handler(CommandHandler("report", cmd_report))
     app.add_handler(CommandHandler("recur_add", cmd_recur_add))
     app.add_handler(CommandHandler("recur_list", cmd_recur_list))
