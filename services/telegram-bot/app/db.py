@@ -289,6 +289,38 @@ def fetch_for_export(chatid: int, period: Optional[str] = None) -> Iterable[Tupl
                 )
                 for row in cur:
                     yield row
+        return
+
+    # Named periods and default
+    where = "chatid = %s"
+    if period:
+        p = period.strip().lower()
+        if p in ("today", "day"):
+            where += " AND ts >= date_trunc('day', now())"
+        elif p == "week":
+            where += " AND ts >= date_trunc('week', now())"
+        elif p == "month":
+            where += " AND ts >= date_trunc('month', now())"
+        elif p == "year":
+            where += " AND ts >= date_trunc('year', now())"
+        elif p == "all":
+            pass
+        else:
+            where += " AND ts >= date_trunc('month', now())"
+    with psycopg.connect(**params) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                SELECT to_char(ts at time zone 'UTC', 'YYYY-MM-DD HH24:MI:SS') as ts_str,
+                       chatid, amount, description
+                FROM transactions
+                WHERE {where}
+                ORDER BY ts ASC
+                """,
+                (chatid,),
+            )
+            for row in cur:
+                yield row
 
 
 # Recurrent operations helpers
@@ -356,37 +388,6 @@ def mark_recurrent_ran(rid: int, run_date: str) -> None:
         conn.commit()
 
         return
-
-    # Named periods
-    where = "chatid = %s"
-    if period:
-        p = period.strip().lower()
-        if p in ("today", "day"):
-            where += " AND ts >= date_trunc('day', now())"
-        elif p == "week":
-            where += " AND ts >= date_trunc('week', now())"
-        elif p == "month":
-            where += " AND ts >= date_trunc('month', now())"
-        elif p == "year":
-            where += " AND ts >= date_trunc('year', now())"
-        elif p == "all":
-            pass
-        else:
-            where += " AND ts >= date_trunc('month', now())"
-    with psycopg.connect(**params) as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                f"""
-                SELECT to_char(ts at time zone 'UTC', 'YYYY-MM-DD HH24:MI:SS') as ts_str,
-                       chatid, amount, description
-                FROM transactions
-                WHERE {where}
-                ORDER BY ts ASC
-                """,
-                (chatid,),
-            )
-            for row in cur:
-                yield row
 
 
 def delete_period(chatid: int, period: str) -> int:
