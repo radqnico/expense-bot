@@ -177,8 +177,7 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     hosts: list[str] = app.bot_data.get(HOSTS_KEY) or parse_ollama_hosts()
     queues: dict = app.bot_data.get(INFERENCE_QUEUES_KEY) or {}
     processing: dict = app.bot_data.get(INFERENCE_PROCESSING_KEY) or {}
-    ready: dict = app.bot_data.get(MODEL_READY_KEY) or {}
-
+    # Compute readiness on the fly per host (ping + model)
     alive_list = await asyncio.to_thread(lambda: [ping_host(h) for h in hosts])
     lines = []
     chat_id = update.effective_chat.id if update.effective_chat else None
@@ -197,7 +196,13 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             except Exception:
                 pass
         status = "up" if alive else "down"
-        model = "ready" if ready.get(h, False) else "not-ready"
+        model = "not-ready"
+        if alive:
+            try:
+                client = OllamaClient(host=h)
+                model = "ready" if await asyncio.to_thread(client.has_model, None, 5.0) else "not-ready"
+            except Exception:
+                model = "not-ready"
         extra = f", you at #{pos}" if pos is not None else ""
         lines.append(f"{h} — {status}, model {model}, queue {qsize}{extra}")
 
