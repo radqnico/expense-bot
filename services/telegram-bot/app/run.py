@@ -53,6 +53,7 @@ HOST_RR_INDEX_KEY = "host_rr_index"
 OLLAMA_LOCK_KEY = "ollama_lock"
 NAV_STATE_KEY = "nav_state"
 MODEL_READY_KEY = "ollama_model_ready"
+MODEL_PULLING_KEY = "ollama_model_pulling"
 
 
 def _normalize_host(h: str) -> str:
@@ -96,44 +97,72 @@ async def echo(update, context: ContextTypes.DEFAULT_TYPE) -> None:
     app.bot_data[INFERENCE_QUEUES_KEY] = queues
     app.bot_data[INFERENCE_PROCESSING_KEY] = processing
 
-    # Check Ollama availability and ensure model per message
-    async def _host_ready(h: str) -> bool:
-        # Ping host
+    # Probe all hosts concurrently: (alive, has_model)
+    async def _probe(h: str) -> tuple[str, bool, bool]:
         url = f"{h.rstrip('/')}/api/version"
+        alive = False
         try:
             r = await asyncio.to_thread(lambda: requests.get(url, timeout=2.0))
-            if not getattr(r, "ok", False):
-                return False
+            alive = bool(getattr(r, "ok", False))
         except Exception:
-            return False
-        # Check/pull model
-        client = OllamaClient(host=h)
-        try:
-            has = await asyncio.to_thread(client.has_model, None, 8.0)
-        except Exception:
-            has = False
-        if not has:
+            alive = False
+        has_model = False
+        if alive:
+            client = OllamaClient(host=h)
             try:
-                # Single pull attempt with bounded timeout
-                await asyncio.to_thread(client.pull_model, None, 1, 3.0, 180.0)
-                has = await asyncio.to_thread(client.has_model, None, 8.0)
+                has_model = bool(await asyncio.to_thread(client.has_model, None, 5.0))
             except Exception:
-                has = False
-        return bool(has)
+                has_model = False
+        return h, alive, has_model
 
-    # Build list of ready hosts
-    ready_hosts: list[str] = []
-    for h in hosts:
-        if await _host_ready(h):
-            ready_hosts.append(h)
+    results = await asyncio.gather(*[_probe(h) for h in hosts])
+    ready_hosts = [h for h, alive, has in results if alive and has]
+    alive_not_ready = [h for h, alive, has in results if alive and not has]
+    down_hosts = [h for h, alive, has in results if not alive]
+
     if not ready_hosts:
-        try:
-            await update.message.reply_text(
-                "⚠️ No model backend available. Use /expense or /income to insert transactions."
-            )
-        except Exception:
-            pass
-        return
+        pulling: dict = app.bot_data.get(MODEL_PULLING_KEY)
+        if pulling is None:
+            pulling = {}
+            app.bot_data[MODEL_PULLING_KEY] = pulling
+
+        # If some hosts are alive but model missing, start background pull once per host
+        if alive_not_ready:
+            started = []
+            for h in alive_not_ready:
+                if not pulling.get(h, False):
+                    pulling[h] = True
+                    started.append(h)
+                    async def _bg_pull(host: str) -> None:
+                        client = OllamaClient(host=host)
+                        try:
+                            await asyncio.to_thread(client.pull_model, None, 3, 5.0, 300.0)
+                        except Exception:
+                            pass
+                        finally:
+                            pulling[host] = False
+                    context.application.create_task(_bg_pull(h))
+            # Inform the user
+            msg = "⚠️ No ready backend right now. "
+            if started:
+                msg += f"Downloading the model on {len(started)} node(s): " + ", ".join(started) + "."
+            else:
+                msg += "Model download is already in progress on available node(s)."
+            msg += " You can retry shortly, or use /expense or /income."
+            try:
+                await update.message.reply_text(msg)
+            except Exception:
+                pass
+            return
+        # No hosts alive at all
+        else:
+            try:
+                await update.message.reply_text(
+                    "⚠️ No backend online. I can't process this now. Use /expense or /income."
+                )
+            except Exception:
+                pass
+            return
     rr = app.bot_data.get(HOST_RR_INDEX_KEY, 0)
     host = ready_hosts[rr % len(ready_hosts)]
     app.bot_data[HOST_RR_INDEX_KEY] = rr + 1
@@ -169,6 +198,7 @@ async def register_workers(app: Application) -> None:
     app.bot_data[HOSTS_KEY] = hosts
     app.bot_data[INFERENCE_QUEUES_KEY] = {h: asyncio.Queue() for h in hosts}
     app.bot_data[INFERENCE_PROCESSING_KEY] = {h: False for h in hosts}
+    app.bot_data[MODEL_PULLING_KEY] = {h: False for h in hosts}
 
     async def worker(host: str) -> None:
         q: asyncio.Queue = app.bot_data[INFERENCE_QUEUES_KEY][host]
@@ -220,7 +250,13 @@ def main() -> None:
 
     # Acquire a singleton lock so only one instance processes updates
     def _acquire_singleton_or_exit(token: str) -> None:
-        key = int.from_bytes(hashlib.sha1(token.encode()).digest()[:8], "big", signed=False)
+        dig = hashlib.sha1(token.encode()).digest()
+        k1 = int.from_bytes(dig[:4], "big", signed=False)
+        k2 = int.from_bytes(dig[4:8], "big", signed=False)
+        if k1 >= 2**31:
+            k1 -= 2**32
+        if k2 >= 2**31:
+            k2 -= 2**32
         dsn = (
             f"host={os.getenv('DB_HOST','postgres')} "
             f"port={os.getenv('DB_PORT','5432')} "
@@ -231,7 +267,7 @@ def main() -> None:
         try:
             conn = psycopg.connect(dsn)
             cur = conn.cursor()
-            cur.execute("SELECT pg_try_advisory_lock(%s::bigint)", (key,))
+            cur.execute("SELECT pg_try_advisory_lock(%s, %s)", (k1, k2))
             ok = bool(cur.fetchone()[0])
             if not ok:
                 logger.error("Another bot instance is active (lock not acquired). Exiting.")
@@ -242,7 +278,7 @@ def main() -> None:
                 raise SystemExit(0)
             # Keep connection open for the lifetime of the process to hold the lock
             globals()["_BOT_SINGLETON_CONN"] = conn  # prevent GC
-            logger.info("Singleton lock acquired (key=%s)", key)
+            logger.info("Singleton lock acquired")
         except Exception as e:
             logger.warning("Could not acquire singleton lock: %s", e)
             # If DB unavailable, proceed without lock (best-effort) but warn about possible duplicates

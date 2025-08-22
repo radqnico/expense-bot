@@ -1252,7 +1252,13 @@ def main() -> None:
 
     # Acquire a singleton lock so only one instance processes updates
     def _acquire_singleton_or_exit(token: str) -> None:
-        key = int.from_bytes(hashlib.sha1(token.encode()).digest()[:8], "big", signed=False)
+        dig = hashlib.sha1(token.encode()).digest()
+        k1 = int.from_bytes(dig[:4], "big", signed=False)
+        k2 = int.from_bytes(dig[4:8], "big", signed=False)
+        if k1 >= 2**31:
+            k1 -= 2**32
+        if k2 >= 2**31:
+            k2 -= 2**32
         dsn = (
             f"host={os.getenv('DB_HOST','postgres')} "
             f"port={os.getenv('DB_PORT','5432')} "
@@ -1263,7 +1269,7 @@ def main() -> None:
         try:
             conn = psycopg.connect(dsn)
             cur = conn.cursor()
-            cur.execute("SELECT pg_try_advisory_lock(%s::bigint)", (key,))
+            cur.execute("SELECT pg_try_advisory_lock(%s, %s)", (k1, k2))
             ok = bool(cur.fetchone()[0])
             if not ok:
                 logger.error("Another bot instance is active (lock not acquired). Exiting.")
@@ -1273,7 +1279,7 @@ def main() -> None:
                     pass
                 raise SystemExit(0)
             globals()["_BOT_SINGLETON_CONN_MAIN"] = conn
-            logger.info("Singleton lock acquired (key=%s)", key)
+            logger.info("Singleton lock acquired")
         except Exception as e:
             logger.warning("Could not acquire singleton lock: %s", e)
 
