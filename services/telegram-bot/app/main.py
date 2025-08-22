@@ -60,7 +60,6 @@ INFERENCE_PROCESSING_KEY = "inference_processing"  # dict[host]->bool
 HOSTS_KEY = "ollama_hosts"  # list[str]
 HOST_RR_INDEX_KEY = "host_rr_index"
 NAV_STATE_KEY = "nav_state"  # per-chat navigation state
-REC_NAV_STATE_KEY = "rec_nav_state"  # per-chat recurrent navigation state
 OLLAMA_LOCK_KEY = "ollama_lock"  # global lock to serialize Ollama calls
 MODEL_READY_KEY = "ollama_model_ready"  # per-host model availability
 
@@ -218,7 +217,7 @@ def _recur_usage() -> str:
         "Example: /recur_add monthly -50.00 abbonamento palestra\n\n"
         "/recur_list [all]\n"
         "/recur_delete ID\n"
-        "/recur_nav  (keyboard to edit)\n"
+        ""
     )
 
 
@@ -268,7 +267,7 @@ async def cmd_recur_list(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     lines = ["ID | kind | amount | active | description"]
     for rid, kind, amount, desc, active in rows:
         lines.append(f"{rid} | {kind} | {amount:+.2f} | {'yes' if active else 'no'} | {desc}")
-    footer = "\nUse /recur_delete ID to deactivate or /recur_nav to edit."
+    footer = "\nUse /recur_delete ID to deactivate."
     await update.message.reply_text("\n".join(lines) + footer)
 
 
@@ -292,113 +291,9 @@ async def cmd_recur_delete(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         await update.message.reply_text("Not found or already inactive.")
 
 
-def _rec_nav_keyboard() -> ReplyKeyboardMarkup:
-    return ReplyKeyboardMarkup([["Prev", "Next"], ["Edit", "Deactivate"], ["Exit"]], resize_keyboard=True)
+# (Recurrent navigation UI removed)
 
 
-async def cmd_recur_nav(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    chat = update.effective_chat
-    if not chat:
-        return
-    rows = await asyncio.to_thread(list_recurrent, int(chat.id), True)
-    if not rows:
-        await update.message.reply_text("No recurrent operations.")
-        return
-    context.chat_data[REC_NAV_STATE_KEY] = {"rows": rows, "idx": 0, "await_edit": False}
-    await _rec_nav_show_current(update, context)
-
-
-async def _rec_nav_show_current(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    chat = update.effective_chat
-    if not chat:
-        return
-    state = context.chat_data.get(REC_NAV_STATE_KEY)
-    if not state:
-        return
-    rows = state["rows"]
-    idx = max(0, min(state.get("idx", 0), len(rows) - 1))
-    state["idx"] = idx
-    rid, kind, amount, desc, active = rows[idx]
-    text = (
-        f"[{idx+1}/{len(rows)}]\n"
-        f"ID: {rid}\nKind: {kind}\nAmount: {Decimal(amount):+.2f}\nActive: {'yes' if active else 'no'}\nDescription: {desc}"
-    )
-    await update.message.reply_text(text, reply_markup=_rec_nav_keyboard())
-
-
-    chat = update.effective_chat
-    if not chat or not update.message or not update.message.text:
-        return
-    state = context.chat_data.get(REC_NAV_STATE_KEY)
-    if not state:
-        return
-    text = update.message.text.strip()
-    rows = state["rows"]
-    idx = state.get("idx", 0)
-
-    if state.get("await_edit"):
-        if text.lower() in {"cancel", "annulla"}:
-            state["await_edit"] = False
-            await update.message.reply_text("Edit cancelled.", reply_markup=_rec_nav_keyboard())
-            return
-        parts = text.split(maxsplit=2)
-        if len(parts) < 3:
-            await update.message.reply_text("Send: KIND AMOUNT DESCRIPTION (or cancel)", reply_markup=_rec_nav_keyboard())
-            return
-        kind = parts[0].lower()
-        if kind not in _ALLOWED_REC_KIND:
-            await update.message.reply_text("Invalid KIND. Allowed: daily|weekly|monthly|yearly", reply_markup=_rec_nav_keyboard())
-            return
-        try:
-            amount = Decimal(parts[1])
-        except Exception:
-            await update.message.reply_text("Invalid AMOUNT. Use decimal like -50.00", reply_markup=_rec_nav_keyboard())
-            return
-        desc = parts[2].strip()
-        rid = rows[idx][0]
-        ok = await asyncio.to_thread(update_recurrent, int(chat.id), int(rid), kind, amount, desc)
-        if ok:
-            rows[idx] = (rid, kind, amount, desc, rows[idx][4])
-            state["await_edit"] = False
-            await update.message.reply_text("Updated.", reply_markup=_rec_nav_keyboard())
-            await _rec_nav_show_current(update, context)
-        else:
-            await update.message.reply_text("Update failed.", reply_markup=_rec_nav_keyboard())
-        return
-
-    cmd = text.lower()
-    if cmd == "prev":
-        if idx > 0:
-            state["idx"] = idx - 1
-        await _rec_nav_show_current(update, context)
-        return
-    if cmd == "next":
-        if idx < len(rows) - 1:
-            state["idx"] = idx + 1
-        await _rec_nav_show_current(update, context)
-        return
-    if cmd == "edit":
-        state["await_edit"] = True
-        await update.message.reply_text("Send new: KIND AMOUNT DESCRIPTION (or cancel)", reply_markup=_rec_nav_keyboard())
-        return
-    if cmd == "deactivate":
-        rid = rows[idx][0]
-        if rows[idx][4]:
-            ok = await asyncio.to_thread(deactivate_recurrent, int(chat.id), int(rid))
-            if ok:
-                rows[idx] = (rows[idx][0], rows[idx][1], rows[idx][2], rows[idx][3], False)
-                await update.message.reply_text("Deactivated.")
-                await _rec_nav_show_current(update, context)
-            else:
-                await update.message.reply_text("Already inactive or not found.")
-        else:
-            await update.message.reply_text("Already inactive. Use /recur_add to create a new one.")
-        return
-    if cmd == "exit":
-        context.chat_data.pop(REC_NAV_STATE_KEY, None)
-        await update.message.reply_text("Recurrent navigation ended.", reply_markup=ReplyKeyboardRemove())
-        return
-    return
 
 
 # Recurrent operations UX-friendly commands
@@ -414,7 +309,7 @@ def _recur_usage() -> str:
         "Example: /recur_add monthly -50.00 abbonamento palestra\n\n"
         "/recur_list [all]\n"
         "/recur_delete ID\n"
-        "/recur_nav  (keyboard to edit)\n"
+        ""
     )
 
 
@@ -464,7 +359,7 @@ async def cmd_recur_list(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     lines = ["ID | kind | amount | active | description"]
     for rid, kind, amount, desc, active in rows:
         lines.append(f"{rid} | {kind} | {amount:+.2f} | {'yes' if active else 'no'} | {desc}")
-    footer = "\nUse /recur_delete ID to deactivate or /recur_nav to edit."
+    footer = "\nUse /recur_delete ID to deactivate."
     await update.message.reply_text("\n".join(lines) + footer)
 
 
