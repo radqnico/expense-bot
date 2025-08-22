@@ -5,6 +5,8 @@ import asyncio
 from dataclasses import dataclass
 from typing import Final, List, Tuple
 import requests
+import hashlib
+import psycopg
 
 from telegram import BotCommand
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
@@ -279,7 +281,42 @@ async def register_workers(app: Application) -> None:
 def main() -> None:
     ensure_schema()
 
-    app = Application.builder().token(os.getenv("TELEGRAM_BOT_TOKEN", "").strip()).concurrent_updates(True).build()
+    # Acquire a singleton lock so only one instance processes updates
+    def _acquire_singleton_or_exit(token: str) -> None:
+        key = int.from_bytes(hashlib.sha1(token.encode()).digest()[:8], "big", signed=False)
+        dsn = (
+            f"host={os.getenv('DB_HOST','postgres')} "
+            f"port={os.getenv('DB_PORT','5432')} "
+            f"dbname={os.getenv('DB_NAME','appdb')} "
+            f"user={os.getenv('DB_USER','app')} "
+            f"password={os.getenv('DB_PASSWORD','app')}"
+        )
+        try:
+            conn = psycopg.connect(dsn)
+            cur = conn.cursor()
+            cur.execute("SELECT pg_try_advisory_lock(%s)", (key,))
+            ok = bool(cur.fetchone()[0])
+            if not ok:
+                logger.error("Another bot instance is active (lock not acquired). Exiting.")
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+                raise SystemExit(0)
+            # Keep connection open for the lifetime of the process to hold the lock
+            globals()["_BOT_SINGLETON_CONN"] = conn  # prevent GC
+            logger.info("Singleton lock acquired (key=%s)", key)
+        except Exception as e:
+            logger.warning("Could not acquire singleton lock: %s", e)
+            # If DB unavailable, proceed without lock (best-effort) but warn about possible duplicates
+
+    token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+    if not token:
+        logger.error("TELEGRAM_BOT_TOKEN is not set")
+        raise SystemExit(2)
+    _acquire_singleton_or_exit(token)
+
+    app = Application.builder().token(token).concurrent_updates(True).build()
 
     # Register commands
     commands: List[Tuple[str, str]] = [

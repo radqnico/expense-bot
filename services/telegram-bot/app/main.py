@@ -12,6 +12,8 @@ import json
 import re
 import threading
 from typing import Final, List, Tuple, Sequence, Set
+import hashlib
+import psycopg
 
 from telegram import BotCommand, Update, ReplyKeyboardMarkup, ReplyKeyboardRemove
 from telegram.error import TelegramError
@@ -1346,6 +1348,35 @@ def get_token() -> str:
 
 def main() -> None:
     token = get_token()
+
+    # Acquire a singleton lock so only one instance processes updates
+    def _acquire_singleton_or_exit(token: str) -> None:
+        key = int.from_bytes(hashlib.sha1(token.encode()).digest()[:8], "big", signed=False)
+        dsn = (
+            f"host={os.getenv('DB_HOST','postgres')} "
+            f"port={os.getenv('DB_PORT','5432')} "
+            f"dbname={os.getenv('DB_NAME','appdb')} "
+            f"user={os.getenv('DB_USER','app')} "
+            f"password={os.getenv('DB_PASSWORD','app')}"
+        )
+        try:
+            conn = psycopg.connect(dsn)
+            cur = conn.cursor()
+            cur.execute("SELECT pg_try_advisory_lock(%s)", (key,))
+            ok = bool(cur.fetchone()[0])
+            if not ok:
+                logger.error("Another bot instance is active (lock not acquired). Exiting.")
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+                raise SystemExit(0)
+            globals()["_BOT_SINGLETON_CONN_MAIN"] = conn
+            logger.info("Singleton lock acquired (key=%s)", key)
+        except Exception as e:
+            logger.warning("Could not acquire singleton lock: %s", e)
+
+    _acquire_singleton_or_exit(token)
 
     # Optionally pull model on start on all configured hosts
     pull_on_start = os.getenv("OLLAMA_PULL_ON_START", "true").lower() not in {"0", "false", "no"}
