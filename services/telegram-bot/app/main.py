@@ -1362,7 +1362,7 @@ def main() -> None:
         try:
             conn = psycopg.connect(dsn)
             cur = conn.cursor()
-            cur.execute("SELECT pg_try_advisory_lock(%s)", (key,))
+            cur.execute("SELECT pg_try_advisory_lock(%s::bigint)", (key,))
             ok = bool(cur.fetchone()[0])
             if not ok:
                 logger.error("Another bot instance is active (lock not acquired). Exiting.")
