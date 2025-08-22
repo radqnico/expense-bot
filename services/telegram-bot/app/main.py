@@ -60,6 +60,7 @@ INFERENCE_PROCESSING_KEY = "inference_processing"  # dict[host]->bool
 HOSTS_KEY = "ollama_hosts"  # list[str]
 HOST_RR_INDEX_KEY = "host_rr_index"
 NAV_STATE_KEY = "nav_state"  # per-chat navigation state
+REC_NAV_STATE_KEY = "rec_nav_state"  # per-chat recurrent navigation state
 OLLAMA_LOCK_KEY = "ollama_lock"  # global lock to serialize Ollama calls
 MODEL_READY_KEY = "ollama_model_ready"  # per-host model availability
 
@@ -266,7 +267,7 @@ async def cmd_recur_list(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return
     lines = ["ID | kind | amount | active | description"]
     for rid, kind, amount, desc, active in rows:
-        lines.append(f"{rid} | {kind} | {amount:+.2f} | {yes if active else no} | {desc}")
+        lines.append(f"{rid} | {kind} | {amount:+.2f} | {'yes' if active else 'no'} | {desc}")
     footer = "\nUse /recur_delete ID to deactivate or /recur_nav to edit."
     await update.message.reply_text("\n".join(lines) + footer)
 
@@ -320,7 +321,7 @@ async def _rec_nav_show_current(update: Update, context: ContextTypes.DEFAULT_TY
     rid, kind, amount, desc, active = rows[idx]
     text = (
         f"[{idx+1}/{len(rows)}]\n"
-        f"ID: {rid}\nKind: {kind}\nAmount: {Decimal(amount):+.2f}\nActive: {yes if active else no}\nDescription: {desc}"
+        f"ID: {rid}\nKind: {kind}\nAmount: {Decimal(amount):+.2f}\nActive: {'yes' if active else 'no'}\nDescription: {desc}"
     )
     await update.message.reply_text(text, reply_markup=_rec_nav_keyboard())
 

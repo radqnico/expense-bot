@@ -218,9 +218,8 @@ async def register_workers(app: Application) -> None:
         async def _ping_with_retries(h: str, attempts: int = 3, delay: float = 0.5) -> bool:
             for i in range(max(1, attempts)):
                 try:
-                    r = await asyncio.to_thread(
-                        requests.get, f"{h.rstrip('/')}/api/version", None, None, None, None, ping_timeout
-                    )
+                    url = f"{h.rstrip('/')}/api/version"
+                    r = await asyncio.to_thread(lambda: requests.get(url, timeout=ping_timeout))
                     if getattr(r, "ok", False):
                         return True
                 except Exception:
