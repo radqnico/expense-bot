@@ -123,15 +123,14 @@ async def echo(update, context: ContextTypes.DEFAULT_TYPE) -> None:
         queues[host] = q
 
     position = q.qsize() + (1 if processing.get(host, False) else 0) + 1
-    try:
-        if position > 1:
+    # Send a queue notice only if the user is not first; avoid duplicate replies otherwise
+    if position > 1:
+        try:
             await update.message.reply_text(
                 f"⏳ Occupato. Sei in coda (#{position}). Ti avviso appena pronto."
             )
-        else:
-            await update.message.reply_text("🚀 Elaboro il tuo messaggio…")
-    except Exception:
-        pass
+        except Exception:
+            pass
 
     await q.put((chat.id, update.message.message_id, text))
 
