@@ -29,6 +29,7 @@ from .main import (
     cmd_sum,
     cmd_undo,
     cmd_export,
+    cmd_import,
     cmd_reset,
     cmd_month,
 )
@@ -328,6 +329,7 @@ def main() -> None:
         ("sum", "Sum by period (today/week/month/all)"),
         ("undo", "Delete last entry"),
         ("export", "Export CSV"),
+        ("import", "Import JSON/Excel/CSV"),
         ("report", "Charts + PDF"),
         ("smartreport", "LLM filtered report"),
         ("expense", "Quick expense: /expense AMOUNT DESCRIPTION"),
@@ -347,6 +349,7 @@ def main() -> None:
     app.add_handler(CommandHandler("sum", cmd_sum))
     app.add_handler(CommandHandler("undo", cmd_undo))
     app.add_handler(CommandHandler("export", cmd_export))
+    app.add_handler(CommandHandler("import", cmd_import))
     app.add_handler(CommandHandler("report", cmd_report))
     app.add_handler(CommandHandler("smartreport", cmd_smartreport))
     app.add_handler(CommandHandler("expense", cmd_expense))
