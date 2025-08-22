@@ -17,6 +17,12 @@ logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
     stream=sys.stdout,
 )
+# Reduce third-party noise (httpx request logs)
+_HTTPX_LVL = os.getenv("HTTPX_LOG_LEVEL", "WARNING").upper()
+try:
+    logging.getLogger("httpx").setLevel(getattr(logging, _HTTPX_LVL, logging.WARNING))
+except Exception:
+    pass
 logger = logging.getLogger("bot-spese.telegram-bot")
 
 # Import handlers from the existing module to avoid duplicating logic
